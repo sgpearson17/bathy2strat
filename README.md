@@ -7,7 +7,7 @@ Code for computing stratigraphy from bathymetric data and other morphodynamic an
 Code for computing stratigraphy from bathymetry as per Figure 5 of Pearson et al (2022)
 
 ### depositAgeCalculator_v019_BogueInlet_GUI_Ameland.m
-Code for computing stratigraphy from bathymetry as per Figure 5 of Pearson et al (2022) 
+Code for computing stratigraphy from bathymetry with GUI as per Pearson et al (2023)
 
 ### polarETDanalysis_v014_resubmission_final_newSensitivity_plot_Ale.m
 Code to compute polar analysis of ebb-tidal delta changes as per Figure 4 of Pearson et al (2022)
@@ -23,7 +23,7 @@ Custom colourmap developed by Stuart based on old Rijkswaterstaat maps. See here
 
 ## References
 
-Pearson, S.G., Elias, E.P.L, van Prooijen, B.C., van der Vegt, H., van der Spek, A. & Wang, Z.B. (2022). A Novel Approach to Mapping Ebb-Tidal Delta Morphodynamics and Stratigraphy. Geomorphology. https://doi.org/10.1016/j.geomorph.2022.108185.
+Pearson, S.G., Elias, E.P.L, van Prooijen, B.C., van der Vegt, H., van der Spek, A. & Wang, Z.B. (2022). _A Novel Approach to Mapping Ebb-Tidal Delta Morphodynamics and Stratigraphy_. Geomorphology. https://doi.org/10.1016/j.geomorph.2022.108185.
 
-Pearson, S.G., Mallinson, D., Brown, C., Mulligan, R. (2023). Bathymetry-derived Stratigraphic Mapping of Bogue Inlet, NC. Poster. Presented by Dave Mallinson. Geological Society of America Joint 72nd Annual Southeastern/58th Annual Northeastern Section Meeting - 2023.
+Pearson, S.G., Mallinson, D., Brown, C., Mulligan, R. (2023). _Bathymetry-derived Stratigraphic Mapping of Bogue Inlet, NC_. Poster. Presented by Dave Mallinson. Geological Society of America Joint 72nd Annual Southeastern/58th Annual Northeastern Section Meeting - 2023.
 8/25. https://doi.org/10.1130/abs/2023SE-385906.
