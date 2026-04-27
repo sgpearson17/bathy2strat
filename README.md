@@ -3,6 +3,27 @@ Code for computing stratigraphy from bathymetric data and other morphodynamic an
 
 ## Code
 
+### Python stratigraphy workflow
+Initial Python conversion of the stratigraphy workflow is available in `code/bathymetry_analysis/stratigraphy.py`.
+
+Supported first-pass features:
+- Known MATLAB bathy `.mat` input structure
+- Transect sources: shapefile, manual points, and interactive GUI picking
+- Configurable CRS transformation for transects
+- Plot outputs to `plots/python/stratigraphy`
+- Separate metric outputs under `metrics/stratigraphy`
+
+Example run (from `code/`):
+
+```bash
+python -m bathymetry_analysis.stratigraphy \
+	--bathy-mat ..\\data\\BogueInlet_2005-2023_bathyReGrid_2023s_dx20m.mat \
+	--output-root .. \
+	--transect-mode shapefile \
+	--shp-dir C:\\surfdrive\\500_Analysis\\522_CarolinaInlets\\data\\SHP \
+	--target-crs EPSG:32618
+```
+
 ### depositAgeCalculator_v016_2022_Natascia.m
 Code for computing stratigraphy from bathymetry as per Figure 5 of Pearson et al (2022)
 
