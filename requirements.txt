@@ -1,0 +1,11 @@
+# Core runtime dependencies for bathy2strat workflows.
+# Install with: python -m pip install -r requirements.txt
+numpy==2.4.4
+pandas==3.0.2
+scipy==1.17.1
+matplotlib==3.10.9
+netCDF4==1.7.4
+pyproj==3.7.2
+geopandas==1.1.3
+ipykernel==7.2.0
+pytest==9.0.3

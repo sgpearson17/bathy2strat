@@ -1,6 +1,81 @@
 # bathy2strat
 Code for computing stratigraphy from bathymetric data and other morphodynamic analyses, as per Pearson et al (2022).
 
+## Python environment setup
+
+Use a local virtual environment and install pinned dependencies so everyone runs the same stack.
+
+### 1) Create and activate a virtual environment
+
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS/Linux (bash/zsh):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 2) Install dependencies
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+For strict reproducibility (CI or exact team sync), install from the lock file instead:
+
+```bash
+python -m pip install -r requirements-lock.txt
+```
+
+### One-command bootstrap scripts
+
+From the repo root:
+
+Windows (PowerShell):
+
+```powershell
+.\setup.ps1
+```
+
+Use exact lock versions:
+
+```powershell
+.\setup.ps1 -UseLockFile
+```
+
+macOS/Linux (bash/zsh):
+
+```bash
+bash setup.sh
+```
+
+Use exact lock versions:
+
+```bash
+bash setup.sh --lock
+```
+
+### 3) Register and select the notebook kernel
+
+```bash
+python -m ipykernel install --user --name bathy2strat --display-name "Python (.venv bathy2strat)"
+```
+
+In VS Code, open the notebook and select the kernel named `Python (.venv bathy2strat)`.
+
+### 4) Verify core imports
+
+```bash
+python -c "import numpy, pandas, scipy, matplotlib, netCDF4, pyproj, geopandas; print('Environment OK')"
+```
+
 ## Code
 
 ### Python stratigraphy workflow

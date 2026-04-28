@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
-from bathymetry_analysis.stratigraphy import BathyCube, StratigraphyConfig, compute_stratigraphy
+from bathymetry_analysis.stratigraphy import (
+    BathyCube,
+    StratigraphyConfig,
+    Transect,
+    compute_stratigraphy,
+    plot_cross_sections,
+)
 
 
 def _toy_cube() -> BathyCube:
@@ -49,3 +57,15 @@ def test_compute_stratigraphy_handles_persistent_nan_cells() -> None:
 
     # One NaN in one survey should propagate to all surveys at that cell.
     assert np.isnan(result.deposit_elev[0, 0, :]).all()
+
+
+def test_plot_cross_sections_writes_visible_png(tmp_path: Path) -> None:
+    cube = _toy_cube()
+    result = compute_stratigraphy(cube, StratigraphyConfig(initial_index=0, dx=20.0))
+    transect = Transect(name="T1", x=np.array([1000.0, 1040.0], dtype=float), y=np.array([2000.0, 2020.0], dtype=float))
+
+    plot_cross_sections(cube, result, [transect], tmp_path)
+
+    pngs = list(tmp_path.glob("Cross-section T1-T1'.png"))
+    assert len(pngs) == 1
+    assert pngs[0].stat().st_size > 0

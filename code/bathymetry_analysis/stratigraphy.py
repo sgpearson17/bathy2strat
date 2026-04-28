@@ -504,7 +504,7 @@ def plot_cross_sections(
         ax.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
         ax.set_xlim(0.0, np.nanmax(dq_km))
 
-        y_min = np.nanmin(z_min) - 1.0
+        y_min = min(np.nanmin(z_min) - 1.0, np.nanmin(baseline) - 1.0)
         y_max = np.nanmax([np.nanmax(z_now) + 1.0, 3.0])
         if np.isfinite(y_min) and np.isfinite(y_max) and y_max > y_min:
             ax.set_ylim(y_min, y_max)
