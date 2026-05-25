@@ -76,6 +76,7 @@ def test_load_for_analysis_accepts_grid_result_and_path(tmp_path: Path) -> None:
         surveys_all=[],
         surveys_processed=[],
         bathy=bathy,
+        overlap_mask=None,
         x_lims=np.array([0.0, 1.0], dtype=float),
         y_lims=np.array([0.0, 1.0], dtype=float),
         x_min=np.array([0.0, 1.0], dtype=float),

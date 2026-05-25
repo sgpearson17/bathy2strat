@@ -83,6 +83,7 @@ class BathyProcessResult:
     surveys_all: list[RawSurvey]
     surveys_processed: list[RawSurvey]
     bathy: BathyGrid
+    overlap_mask: np.ndarray | None
     x_lims: np.ndarray
     y_lims: np.ndarray
     x_min: np.ndarray
@@ -111,6 +112,13 @@ def _datenum_to_year_month(datenum_value: float) -> tuple[int, int]:
 
     dt = datetime.fromordinal(int(datenum_value)) + timedelta(days=datenum_value % 1) - timedelta(days=366)
     return dt.year, dt.month
+
+
+def _datenum_to_date(datenum_value: float) -> tuple[int, int, int]:
+    from datetime import datetime, timedelta
+
+    dt = datetime.fromordinal(int(datenum_value)) + timedelta(days=datenum_value % 1) - timedelta(days=366)
+    return dt.year, dt.month, dt.day
 
 
 def _ensure_dir(path: Path) -> None:
@@ -272,12 +280,12 @@ def save_raw_surveys_mat(surveys: list[RawSurvey], out_path: str | Path) -> None
     savemat(str(out_path), {"bathyRaw": np.array(recs, dtype=object)})
 
 
-def remove_year(surveys: list[RawSurvey], year_to_remove: int) -> list[RawSurvey]:
-    """Return surveys excluding any that match the target year."""
+def remove_surveys_by_date(surveys: list[RawSurvey], dates_to_remove: set[tuple[int, int, int]]) -> list[RawSurvey]:
+    """Return surveys excluding any that match a YYYY-MM-DD date tuple."""
     filtered: list[RawSurvey] = []
     for s in surveys:
-        y, _ = _datenum_to_year_month(s.datenum)
-        if y != year_to_remove:
+        y, m, d = _datenum_to_date(s.datenum)
+        if (y, m, d) not in dates_to_remove:
             filtered.append(s)
     return filtered
 
@@ -412,12 +420,21 @@ def plot_raw_surveys(
     y_lims: np.ndarray,
     out_dir: str | Path,
     bathy_cmap,
+    overlap_mask: np.ndarray | None = None,
+    overlap_x: np.ndarray | None = None,
+    overlap_y: np.ndarray | None = None,
     mask_nan: bool = True,
 ) -> None:
     """Plot each raw bathymetry survey.
     
     Parameters
     ----------
+    overlap_mask : np.ndarray | None
+        Optional overlap mask to outline on top of each raw survey.
+    overlap_x : np.ndarray | None
+        X grid (meters) that matches overlap_mask.
+    overlap_y : np.ndarray | None
+        Y grid (meters) that matches overlap_mask.
     mask_nan : bool
         If True, mask out NaN values so they appear white instead of filled.
     """
@@ -431,6 +448,16 @@ def plot_raw_surveys(
         cf = ax.contourf(s.x_raw / 1000.0, s.y_raw / 1000.0, z_plot, levels=levels, cmap=bathy_cmap)
         ax.contour(s.x_raw / 1000.0, s.y_raw / 1000.0, s.z_raw, levels=[MLW], colors=[(0.5, 0.5, 0.5)], linewidths=1.0)
         ax.contour(s.x_raw / 1000.0, s.y_raw / 1000.0, s.z_raw, levels=[-6], colors="k", linestyles=":", linewidths=0.5)
+
+        if overlap_mask is not None and overlap_x is not None and overlap_y is not None:
+            ax.contour(
+                overlap_x / 1000.0,
+                overlap_y / 1000.0,
+                overlap_mask.astype(float),
+                levels=[0.5],
+                colors=[(0.0, 0.0, 0.0)],
+                linewidths=1.4,
+            )
 
         y, m = _datenum_to_year_month(s.datenum)
         ax.set_title(f"{s.location} {y:04d}-{m:02d}")
@@ -458,7 +485,7 @@ def regrid_surveys(
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
-) -> BathyGrid:
+) -> tuple[BathyGrid, np.ndarray]:
     """Interpolate all raw surveys onto a common overlapping grid."""
     x_grid_lim = x_min * 1000.0
     y_grid_lim = y_min * 1000.0
@@ -509,13 +536,14 @@ def regrid_surveys(
     )
     gz[~overlap_mask, :] = np.nan
 
-    return BathyGrid(
+    bathy = BathyGrid(
         location=surveys[0].location,
         t=t,
         x=gx,
         y=gy,
         z=gz,
     )
+    return bathy, overlap_mask
 
 
 def compute_minimum_overlap_mask(
@@ -789,6 +817,7 @@ def _as_bathy_process_result(process_result: BathyProcessResult | str | Path) ->
         surveys_all=[],
         surveys_processed=[],
         bathy=bathy,
+        overlap_mask=None,
         x_lims=np.array([np.nan, np.nan], dtype=float),
         y_lims=np.array([np.nan, np.nan], dtype=float),
         x_min=np.array([np.nan, np.nan], dtype=float),
@@ -942,6 +971,26 @@ def plot_regridded_surveys(
         raw_seq = raw_surveys
     have_raw = bool(raw_seq) and len(raw_seq) == t_vals.size
 
+    if overlap_mask is not None:
+        overlap_idx = np.where(overlap_mask)
+        if overlap_idx[0].size > 0:
+            x_vals = bathy.x[overlap_idx]
+            y_vals = bathy.y[overlap_idx]
+            x_lims = (float(np.min(x_vals)) / 1000.0, float(np.max(x_vals)) / 1000.0)
+            y_lims = (float(np.min(y_vals)) / 1000.0, float(np.max(y_vals)) / 1000.0)
+        else:
+            overlap_mask = None
+    if overlap_mask is None:
+        x_lims = (float(np.min(bathy.x)) / 1000.0, float(np.max(bathy.x)) / 1000.0)
+        y_lims = (float(np.min(bathy.y)) / 1000.0, float(np.max(bathy.y)) / 1000.0)
+
+    x_span = x_lims[1] - x_lims[0]
+    y_span = y_lims[1] - y_lims[0]
+    x_pad = 0.02 * x_span
+    y_pad = 0.02 * y_span
+    x_lims = (x_lims[0] - x_pad, x_lims[1] + x_pad)
+    y_lims = (y_lims[0] - y_pad, y_lims[1] + y_pad)
+
     for i in range(t_vals.size):
         fig, ax = plt.subplots(figsize=(11.4, 7.9))
 
@@ -982,14 +1031,21 @@ def plot_regridded_surveys(
         z_contour = np.ma.masked_where(outside_mask | np.isnan(z_data), z_data)
         ax.contour(bathy.x / 1000.0, bathy.y / 1000.0, z_contour, levels=[MLW], colors=[(0.5, 0.5, 0.5)], linewidths=1.0)
         ax.contour(bathy.x / 1000.0, bathy.y / 1000.0, z_contour, levels=[-6], colors="k", linestyles=":", linewidths=0.5)
+        if overlap_mask is not None:
+            ax.contour(
+                bathy.x / 1000.0,
+                bathy.y / 1000.0,
+                overlap_mask.astype(float),
+                levels=[0.5],
+                colors=[(0.0, 0.0, 0.0)],
+                linewidths=1.4,
+            )
 
         y, m = _datenum_to_year_month(float(t_vals[i]))
         ax.text(307.9, 3835.9, f"{y:04d}-{m:02d}", fontsize=16, weight="bold", style="italic")
 
-        ax.set_xlim((307.0, 309.0))
-        ax.set_ylim((3834.3, 3836.1))
-        ax.set_xticks(np.arange(307, 309.01, 0.2))
-        ax.set_yticks(np.arange(3834.3, 3836.11, 0.2))
+        ax.set_xlim(x_lims)
+        ax.set_ylim(y_lims)
         ax.set_xticklabels([])
         ax.set_yticklabels([])
         ax.set_aspect("equal", adjustable="box")
@@ -1012,7 +1068,8 @@ def run_bathy_formatter(
     out_dir: str | Path,
     plot_dir: str | Path,
     dx: float = 20.0,
-    drop_year: int | None = 2008,
+    drop_survey: list[str] | None = None,
+    print_raw_survey_dates: bool = True,
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
@@ -1036,7 +1093,8 @@ def run_bathy_formatter(
         nc_dir=nc_dir,
         out_dir=out_dir,
         dx=dx,
-        drop_year=drop_year,
+        drop_survey=drop_survey,
+        print_raw_survey_dates=print_raw_survey_dates,
         interp_method=interp_method,
         boundary_tightness=boundary_tightness,
         overlap_erosion_cells=overlap_erosion_cells,
@@ -1062,7 +1120,8 @@ def process_bathy_formatter(
     nc_dir: str | Path,
     out_dir: str | Path,
     dx: float = 20.0,
-    drop_year: int | None = 2008,
+    drop_survey: list[str] | None = None,
+    print_raw_survey_dates: bool = True,
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
@@ -1072,6 +1131,10 @@ def process_bathy_formatter(
     
     Parameters
     ----------
+    drop_survey : list[str] | None
+        Optional list of survey dates to drop (format: YYYY-MM-DD).
+    print_raw_survey_dates : bool
+        If True, print the raw survey dates found in the input dataset.
     output_format : str
         Format for regridded output: "netcdf" (CF-compliant, default),
         "mat" (MATLAB struct), or "both".
@@ -1081,16 +1144,34 @@ def process_bathy_formatter(
 
     surveys = load_raw_surveys(nc_dir)
 
+    drop_dates: set[tuple[int, int, int]] = set()
+    if drop_survey:
+        from datetime import datetime
+
+        for date_str in drop_survey:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            drop_dates.add((dt.year, dt.month, dt.day))
+
+    if print_raw_survey_dates:
+        date_lines = []
+        for y, m, d in (_datenum_to_date(s.datenum) for s in surveys):
+            label = f"{y:04d}-{m:02d}-{d:02d}"
+            if (y, m, d) in drop_dates:
+                label += " [dropped]"
+            date_lines.append(label)
+        print("Raw survey dates:")
+        print("\n".join(date_lines))
+
     # Save full raw set (with all years).
     min_year, _ = _datenum_to_year_month(min(s.datenum for s in surveys))
     max_year, _ = _datenum_to_year_month(max(s.datenum for s in surveys))
     base = surveys[0].location
     save_raw_surveys_mat(surveys, out_path / f"{base}_{min_year}-{max_year}_bathyRaw_with2008_2023s_py.mat")
 
-    # Optionally drop a year to improve overlap, mirroring MATLAB behavior.
+    # Optionally drop surveys by exact YYYY-MM-DD dates to improve overlap.
     surveys_proc = surveys
-    if drop_year is not None:
-        surveys_proc = remove_year(surveys_proc, drop_year)
+    if drop_survey:
+        surveys_proc = remove_surveys_by_date(surveys_proc, drop_dates)
 
     min_year2, _ = _datenum_to_year_month(min(s.datenum for s in surveys_proc))
     max_year2, _ = _datenum_to_year_month(max(s.datenum for s in surveys_proc))
@@ -1098,7 +1179,7 @@ def process_bathy_formatter(
 
     x_lims, y_lims, x_min, y_min = compute_domain_extents(surveys_proc)
 
-    bathy = regrid_surveys(
+    bathy, overlap_mask = regrid_surveys(
         surveys_proc,
         dx=dx,
         x_min=x_min,
@@ -1124,6 +1205,7 @@ def process_bathy_formatter(
         surveys_all=surveys,
         surveys_processed=surveys_proc,
         bathy=bathy,
+        overlap_mask=overlap_mask,
         x_lims=x_lims,
         y_lims=y_lims,
         x_min=x_min,
@@ -1161,14 +1243,10 @@ def plot_bathy_formatter_outputs(
     bathy_cmap = get_named_colormap(bathy_cmap_name, bathy_cmap_file)
 
     overlap_mask = None
+    x_lims_all = None
+    y_lims_all = None
     if extent_boundary_method.lower() == "mask" and not loaded_from_file:
-        overlap_mask = compute_minimum_overlap_mask(
-            process_result.surveys_processed,
-            process_result.bathy.x,
-            process_result.bathy.y,
-            boundary_tightness=boundary_tightness,
-            overlap_erosion_cells=overlap_erosion_cells,
-        )
+        overlap_mask = process_result.overlap_mask
 
     if not loaded_from_file:
         plot_extents(
@@ -1178,12 +1256,16 @@ def plot_bathy_formatter_outputs(
             extent_boundary_method=extent_boundary_method,
         )
 
+        x_lims_all, y_lims_all, _, _ = compute_domain_extents(process_result.surveys_all)
         plot_raw_surveys(
-            process_result.surveys_processed,
-            process_result.x_lims,
-            process_result.y_lims,
+            process_result.surveys_all,
+            x_lims_all,
+            y_lims_all,
             plot_path / "raw",
             bathy_cmap,
+            overlap_mask=overlap_mask,
+            overlap_x=process_result.bathy.x,
+            overlap_y=process_result.bathy.y,
             mask_nan=mask_nan_plots,
         )
     else:
@@ -1207,10 +1289,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot-dir", required=True, help="Output directory for QC plots")
     parser.add_argument("--dx", type=float, default=20.0, help="Grid spacing in meters (default: 20)")
     parser.add_argument(
-        "--drop-year",
-        type=int,
-        default=2008,
-        help="Survey year to remove before regridding (default: 2008). Use -1 to keep all years.",
+        "--drop-survey",
+        nargs="+",
+        default=None,
+        help=(
+            "Survey dates to remove before regridding (format: YYYY-MM-DD). "
+            "Example: --drop-survey 2008-01-01 2010-03-01"
+        ),
+    )
+    parser.add_argument(
+        "--no-print-raw-survey-dates",
+        action="store_true",
+        help="Disable printing raw survey dates from the input dataset.",
     )
     parser.add_argument(
         "--interp-method",
@@ -1276,7 +1366,6 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    drop_year = None if args.drop_year == -1 else args.drop_year
     mask_nan = not args.no_mask_nan
 
     run_bathy_formatter(
@@ -1284,7 +1373,8 @@ def main() -> None:
         out_dir=args.out_dir,
         plot_dir=args.plot_dir,
         dx=args.dx,
-        drop_year=drop_year,
+        drop_survey=args.drop_survey,
+        print_raw_survey_dates=not args.no_print_raw_survey_dates,
         interp_method=args.interp_method,
         boundary_tightness=args.boundary_tightness,
         overlap_erosion_cells=args.overlap_erosion_cells,
