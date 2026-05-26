@@ -1,3 +1,5 @@
+"""Stratigraphy computation and plotting utilities for bathymetry cubes."""
+
 from __future__ import annotations
 
 import argparse
@@ -21,6 +23,15 @@ MLW = -0.590
 
 @dataclass
 class BathyCube:
+    """Container for gridded bathymetry time series.
+
+    :ivar location: Descriptive location name or identifier.
+    :ivar t: MATLAB datenum survey times, shape (nt,).
+    :ivar x: 2D grid of x coordinates in meters.
+    :ivar y: 2D grid of y coordinates in meters.
+    :ivar z: 3D bathymetry cube, shape (ny, nx, nt) or (nx, ny, nt).
+    """
+
     location: str
     t: np.ndarray  # MATLAB datenum, shape (nt,)
     x: np.ndarray  # 2D grid, meters
@@ -30,6 +41,13 @@ class BathyCube:
 
 @dataclass
 class Transect:
+    """Transect polyline in projected coordinates.
+
+    :ivar name: Transect label.
+    :ivar x: X coordinates in meters.
+    :ivar y: Y coordinates in meters.
+    """
+
     name: str
     x: np.ndarray  # meters
     y: np.ndarray  # meters
@@ -37,6 +55,16 @@ class Transect:
 
 @dataclass
 class StratigraphyConfig:
+    """Configuration values for stratigraphy processing and plotting.
+
+    :ivar initial_index: Survey index used as the baseline surface.
+    :ivar dx: Grid cell size in meters.
+    :ivar target_crs: Target projected CRS for transects (e.g., EPSG:32618).
+    :ivar dot_spacing_km: Spacing between map dots along transects.
+    :ivar end_dot_size: Marker size for transect endpoints.
+    :ivar mid_dot_size: Marker size for intermediate points.
+    """
+
     initial_index: int = 0
     dx: float = 20.0
     target_crs: str = "EPSG:32618"
@@ -47,6 +75,19 @@ class StratigraphyConfig:
 
 @dataclass
 class StratigraphyResult:
+    """Computed stratigraphy outputs and derived metrics.
+
+    :ivar t: Survey datenums.
+    :ivar t_full: Monthly datenums spanning the survey years.
+    :ivar min_surf: Minimum surface after the baseline index.
+    :ivar max_surf: Maximum surface after the baseline index.
+    :ivar deposit_elev: Erosion-adjusted deposit elevations.
+    :ivar deposit_thk_full: Monthly deposit thickness stack.
+    :ivar deposit_per_year: Annual deposit volumes per survey year.
+    :ivar total_sed_vol_per_year: Total sediment volume per survey year.
+    :ivar theseus_ratio: Ratio of preserved to original deposits.
+    """
+
     t: np.ndarray
     t_full: np.ndarray
     min_surf: np.ndarray
@@ -59,6 +100,11 @@ class StratigraphyResult:
 
 
 def datenum_to_datetime64(datenum: np.ndarray) -> np.ndarray:
+    """Convert MATLAB datenum values to numpy datetime64.
+
+    :param datenum: Array-like MATLAB datenums.
+    :returns: 1D array of numpy datetime64 values.
+    """
     import datetime as dt
 
     out = []
@@ -71,6 +117,11 @@ def datenum_to_datetime64(datenum: np.ndarray) -> np.ndarray:
 
 
 def datetime64_to_datenum(values: Iterable[np.datetime64]) -> np.ndarray:
+    """Convert datetime64 values to MATLAB datenum floats.
+
+    :param values: Iterable of numpy datetime64 values.
+    :returns: Array of MATLAB datenums as floats.
+    """
     import datetime as dt
 
     out = []
@@ -81,12 +132,23 @@ def datetime64_to_datenum(values: Iterable[np.datetime64]) -> np.ndarray:
 
 
 def _coerce_mat_struct(value):
+    """Normalize MATLAB structs loaded as object arrays.
+
+    :param value: Value returned from ``scipy.io.loadmat``.
+    :returns: Unwrapped struct if stored in a 0-d object array.
+    """
     if isinstance(value, np.ndarray) and value.dtype == object:
         return value.flat[0]
     return value
 
 
 def load_bathy_mat_known_structure(path: str | Path) -> BathyCube:
+    """Load a bathy MAT file with the expected ``bathy`` struct fields.
+
+    :param path: Path to the MAT file.
+    :returns: Parsed :class:`BathyCube`.
+    :raises ValueError: If the MAT file does not match the expected structure.
+    """
     mat = loadmat(str(path), squeeze_me=True, struct_as_record=False)
     if "bathy" not in mat:
         raise ValueError(f"Expected a 'bathy' struct in {path}")
@@ -113,6 +175,13 @@ def load_bathy_mat_known_structure(path: str | Path) -> BathyCube:
 
 
 def _derive_xy_axes(x2d: np.ndarray, y2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Extract monotonic 1D x/y axes from 2D mesh grids.
+
+    :param x2d: 2D mesh grid of x coordinates.
+    :param y2d: 2D mesh grid of y coordinates.
+    :returns: Tuple of ``(x_axis, y_axis)``.
+    :raises ValueError: If axes are not monotonic.
+    """
     x_axis = np.asarray(x2d[0, :], dtype=float)
     y_axis = np.asarray(y2d[:, 0], dtype=float)
 
@@ -123,6 +192,12 @@ def _derive_xy_axes(x2d: np.ndarray, y2d: np.ndarray) -> tuple[np.ndarray, np.nd
 
 
 def _nanminmax_surface(stack: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
+    """Compute nan-safe min/max surfaces along an axis.
+
+    :param stack: Input array.
+    :param axis: Axis along which to compute min/max.
+    :returns: Tuple of ``(min_surface, max_surface)``.
+    """
     all_nan = np.all(np.isnan(stack), axis=axis)
     stack_safe = np.where(all_nan[..., None], np.inf, stack)
     min_surf = np.nanmin(stack_safe, axis=axis)
@@ -135,6 +210,13 @@ def _nanminmax_surface(stack: np.ndarray, axis: int) -> tuple[np.ndarray, np.nda
 
 
 def compute_stratigraphy(bathy: BathyCube, config: StratigraphyConfig) -> StratigraphyResult:
+    """Compute stratigraphic thickness and volume metrics from a bathy cube.
+
+    :param bathy: Bathymetry cube with surveys over time.
+    :param config: Stratigraphy configuration.
+    :returns: Stratigraphy results and derived metrics.
+    :raises ValueError: If ``initial_index`` is out of bounds.
+    """
     initial_idx = config.initial_index
     x = bathy.x
     y = bathy.y
@@ -168,6 +250,7 @@ def compute_stratigraphy(bathy: BathyCube, config: StratigraphyConfig) -> Strati
                 cur = deposit_elev[:, :, tt]
                 for k in range(initial_idx, tt):
                     prev = deposit_elev[:, :, k]
+                    # Push erosion downward to earlier preserved surfaces.
                     update = erosion_mask & ~np.isnan(prev) & (cur < prev)
                     prev[update] = cur[update]
                     deposit_elev[:, :, k] = prev
@@ -233,6 +316,11 @@ def compute_stratigraphy(bathy: BathyCube, config: StratigraphyConfig) -> Strati
 
 
 def _extract_line_xy(gdf) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract coordinates from LineString or MultiLineString geometry.
+
+    :param gdf: GeoDataFrame containing geometries.
+    :returns: ``(x, y)`` arrays or ``None`` if no line geometry is found.
+    """
     for geom in gdf.geometry:
         if geom is None:
             continue
@@ -249,6 +337,11 @@ def _extract_line_xy(gdf) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _extract_xy_columns(gdf) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract coordinates from likely x/y attribute columns.
+
+    :param gdf: GeoDataFrame with attribute columns.
+    :returns: ``(x, y)`` arrays or ``None`` if no columns match.
+    """
     lower_to_col = {c.lower(): c for c in gdf.columns}
 
     x_keys = ["lon1", "x", "easting", "lon", "longitude"]
@@ -267,6 +360,15 @@ def _extract_xy_columns(gdf) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _resolve_source_crs(gdf, source_crs: str | None, prompt_if_missing: bool, shp_name: str) -> CRS:
+    """Resolve a CRS from arguments, GeoDataFrame, or user prompt.
+
+    :param gdf: GeoDataFrame with optional CRS metadata.
+    :param source_crs: CRS override string (e.g., ``EPSG:4326``).
+    :param prompt_if_missing: Whether to prompt the user if CRS is missing.
+    :param shp_name: Shapefile name for error messaging.
+    :returns: Resolved :class:`pyproj.CRS`.
+    :raises ValueError: If CRS is missing and prompting is disabled.
+    """
     if source_crs is not None:
         return CRS.from_user_input(source_crs)
     if gdf.crs is not None:
@@ -288,6 +390,16 @@ def load_transects_from_shapefiles(
     source_crs: str | None = None,
     prompt_if_missing_crs: bool = True,
 ) -> list[Transect]:
+    """Load and reproject transects from shapefiles in a directory.
+
+    :param shp_dir: Directory containing shapefiles.
+    :param target_crs: Target CRS for reprojection.
+    :param source_crs: Optional source CRS override.
+    :param prompt_if_missing_crs: Prompt for CRS if shapefile lacks metadata.
+    :returns: List of :class:`Transect` objects.
+    :raises FileNotFoundError: If no shapefiles are found.
+    :raises ValueError: If transect coordinates cannot be derived.
+    """
     try:
         import geopandas as gpd
     except ImportError as exc:
@@ -327,6 +439,13 @@ def load_transects_from_shapefiles(
 
 
 def build_manual_transects(transect_points: list[np.ndarray], names: list[str] | None = None) -> list[Transect]:
+    """Build transects from manual Nx2 arrays of points.
+
+    :param transect_points: List of arrays shaped (n, 2).
+    :param names: Optional list of transect names.
+    :returns: List of :class:`Transect` objects.
+    :raises ValueError: If any transect array is not shape (n, 2).
+    """
     out: list[Transect] = []
     for i, points in enumerate(transect_points):
         arr = np.asarray(points, dtype=float)
@@ -338,6 +457,13 @@ def build_manual_transects(transect_points: list[np.ndarray], names: list[str] |
 
 
 def pick_interactive_transect(ax, name: str = "GUI") -> Transect:
+    """Collect a transect polyline from interactive matplotlib clicks.
+
+    :param ax: Matplotlib axes for plotting feedback.
+    :param name: Transect name.
+    :returns: Transect created from user clicks.
+    :raises ValueError: If fewer than two points are selected.
+    """
     print("Left-click to add points, press Enter to finish transect")
     pts = np.asarray(plt.ginput(n=-1, timeout=0), dtype=float)
     if pts.shape[0] < 2:
@@ -347,6 +473,14 @@ def pick_interactive_transect(ax, name: str = "GUI") -> Transect:
 
 
 def _resample_polyline(x: np.ndarray, y: np.ndarray, n_points: int = 1000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Resample a polyline to uniform distance spacing.
+
+    :param x: X coordinates of the polyline.
+    :param y: Y coordinates of the polyline.
+    :param n_points: Number of output samples.
+    :returns: Tuple ``(x_q, y_q, s_q)`` of resampled coordinates and distances.
+    :raises ValueError: If the polyline length is zero.
+    """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
 
@@ -376,6 +510,15 @@ def _interp_stack_along_transect(
     x_q: np.ndarray,
     y_q: np.ndarray,
 ) -> np.ndarray:
+    """Interpolate a 3D stack along a transect polyline.
+
+    :param x_axis: 1D x-axis for the grid.
+    :param y_axis: 1D y-axis for the grid.
+    :param stack: 3D array to sample, shape (ny, nx, nt).
+    :param x_q: Transect x coordinates to sample.
+    :param y_q: Transect y coordinates to sample.
+    :returns: Array of shape (nt, n_points).
+    """
     out = np.full((stack.shape[2], len(x_q)), np.nan, dtype=float)
     pts = np.column_stack([y_q, x_q])
 
@@ -398,12 +541,26 @@ def _interp_surface_along_transect(
     x_q: np.ndarray,
     y_q: np.ndarray,
 ) -> np.ndarray:
+    """Interpolate a 2D surface along a transect polyline.
+
+    :param x_axis: 1D x-axis for the grid.
+    :param y_axis: 1D y-axis for the grid.
+    :param surface: 2D surface to sample.
+    :param x_q: Transect x coordinates to sample.
+    :param y_q: Transect y coordinates to sample.
+    :returns: Interpolated values along the transect.
+    """
     interp = RegularGridInterpolator((y_axis, x_axis), surface, bounds_error=False, fill_value=np.nan)
     pts = np.column_stack([y_q, x_q])
     return interp(pts)
 
 
 def _default_cmap(n: int) -> Colormap:
+    """Return a discrete matplotlib colormap with at least two bins.
+
+    :param n: Number of bins.
+    :returns: Matplotlib colormap.
+    """
     return plt.get_cmap("viridis", max(n, 2))
 
 
@@ -413,6 +570,13 @@ def plot_transect_location_map(
     out_path: str | Path,
     config: StratigraphyConfig,
 ) -> None:
+    """Plot bathymetry map with transect polylines and markers.
+
+    :param bathy: Bathymetry cube.
+    :param transects: Transects to render.
+    :param out_path: Output image path.
+    :param config: Plotting configuration.
+    """
     fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
     x_km = bathy.x / 1000.0
     y_km = bathy.y / 1000.0
@@ -464,6 +628,13 @@ def plot_cross_sections(
     transects: list[Transect],
     out_dir: str | Path,
 ) -> None:
+    """Plot stratigraphic cross-sections for each transect.
+
+    :param bathy: Bathymetry cube.
+    :param result: Stratigraphy results.
+    :param transects: Transects to render.
+    :param out_dir: Output directory for images.
+    """
     x_axis, y_axis = _derive_xy_axes(bathy.x, bathy.y)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -487,6 +658,7 @@ def plot_cross_sections(
         for k in range(dep_xs.shape[0]):
             layer = np.nan_to_num(dep_xs[k, :], nan=0.0)
             next_running = running + layer
+            # Stack deposit thickness layers from a fixed baseline.
             ax.fill_between(dq_km, running, next_running, color=colors[k], linewidth=0.0)
             running = next_running
 
@@ -515,6 +687,11 @@ def plot_cross_sections(
 
 
 def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None:
+    """Plot Theseus ratio curves in linear and log-log space.
+
+    :param result: Stratigraphy results.
+    :param out_path: Output image path.
+    """
     t_dt = datenum_to_datetime64(result.t)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
@@ -551,6 +728,11 @@ def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None
 
 
 def save_metrics(result: StratigraphyResult, out_dir: str | Path) -> None:
+    """Write stratigraphy metrics and grids to disk.
+
+    :param result: Stratigraphy results.
+    :param out_dir: Output directory.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -576,6 +758,18 @@ def run_stratigraphy_workflow(
     source_crs: str | None = None,
     config: StratigraphyConfig | None = None,
 ) -> StratigraphyResult:
+    """Run the full stratigraphy workflow including plotting and exports.
+
+    :param bathy_mat_path: Path to the bathy MAT file.
+    :param output_root: Root output directory.
+    :param transect_mode: ``shapefile``, ``manual``, or ``gui``.
+    :param shp_dir: Shapefile directory when using ``shapefile`` mode.
+    :param manual_transects: Manual transect point arrays.
+    :param source_crs: Optional source CRS override for shapefiles.
+    :param config: Optional stratigraphy configuration.
+    :returns: Stratigraphy results.
+    :raises ValueError: If required transect inputs are missing.
+    """
     config = config or StratigraphyConfig()
     bathy = load_bathy_mat_known_structure(bathy_mat_path)
     result = compute_stratigraphy(bathy, config)
@@ -624,6 +818,10 @@ def run_stratigraphy_workflow(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser.
+
+    :returns: Configured argument parser.
+    """
     parser = argparse.ArgumentParser(description="Compute stratigraphy from MATLAB bathy input")
     parser.add_argument("--bathy-mat", required=True, help="Path to bathy MAT file with known structure")
     parser.add_argument("--output-root", default=".", help="Root output folder")
@@ -642,6 +840,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     parser = _build_parser()
     args = parser.parse_args()
 

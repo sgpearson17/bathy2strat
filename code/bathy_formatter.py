@@ -59,6 +59,17 @@ VINTAGE_SGP_CLR = [
 
 @dataclass
 class RawSurvey:
+    """Raw bathymetry survey loaded from a netCDF file.
+
+    :ivar location: Survey location name.
+    :ivar datenum: MATLAB datenum timestamp.
+    :ivar vertical_datum: Vertical datum label from file name.
+    :ivar horizontal_datum: Optional horizontal datum or CRS string.
+    :ivar ncfile: Source netCDF file name.
+    :ivar x_raw: X coordinate grid in meters.
+    :ivar y_raw: Y coordinate grid in meters.
+    :ivar z_raw: Bathymetry grid in meters (positive up).
+    """
     location: str
     datenum: float
     vertical_datum: str
@@ -71,6 +82,14 @@ class RawSurvey:
 
 @dataclass
 class BathyGrid:
+    """Regridded bathymetry time stack on a shared grid.
+
+    :ivar location: Survey location name.
+    :ivar t: MATLAB datenum time column vector, shape (nt, 1).
+    :ivar x: 2D grid of x coordinates in meters.
+    :ivar y: 2D grid of y coordinates in meters.
+    :ivar z: 3D bathymetry cube, shape (ny, nx, nt).
+    """
     location: str
     t: np.ndarray
     x: np.ndarray
@@ -80,6 +99,20 @@ class BathyGrid:
 
 @dataclass
 class BathyProcessResult:
+    """Outputs from the bathy formatter processing pipeline.
+
+    :ivar surveys_all: All raw surveys discovered in input directory.
+    :ivar surveys_processed: Surveys retained after optional drops.
+    :ivar bathy: Regridded bathymetry stack.
+    :ivar overlap_mask: Boolean mask of overlapping valid domain.
+    :ivar x_lims: Global x limits in km.
+    :ivar y_lims: Global y limits in km.
+    :ivar x_min: Overlap x limits in km.
+    :ivar y_min: Overlap y limits in km.
+    :ivar output_base: Base name used for outputs.
+    :ivar min_year_processed: Earliest year processed.
+    :ivar max_year_processed: Latest year processed.
+    """
     surveys_all: list[RawSurvey]
     surveys_processed: list[RawSurvey]
     bathy: BathyGrid
@@ -94,7 +127,13 @@ class BathyProcessResult:
 
 
 def _matlab_datenum(year: int, month: int, day: int = 1) -> float:
-    """Convert a calendar date to MATLAB-style datenum."""
+    """Convert a calendar date to MATLAB-style datenum.
+
+    :param year: Calendar year.
+    :param month: Calendar month.
+    :param day: Calendar day.
+    :returns: MATLAB datenum value.
+    """
     # MATLAB day 1 == 0000-01-01, Python ordinal day 1 == 0001-01-01
     # Offset = 366 days.
     from datetime import datetime
@@ -108,6 +147,11 @@ def _matlab_datenum(year: int, month: int, day: int = 1) -> float:
     return dt.toordinal() + 366
 
 def _datenum_to_year_month(datenum_value: float) -> tuple[int, int]:
+    """Convert MATLAB datenum to year and month.
+
+    :param datenum_value: MATLAB datenum value.
+    :returns: ``(year, month)`` tuple.
+    """
     from datetime import datetime, timedelta
 
     dt = datetime.fromordinal(int(datenum_value)) + timedelta(days=datenum_value % 1) - timedelta(days=366)
@@ -115,6 +159,11 @@ def _datenum_to_year_month(datenum_value: float) -> tuple[int, int]:
 
 
 def _datenum_to_date(datenum_value: float) -> tuple[int, int, int]:
+    """Convert MATLAB datenum to year, month, and day.
+
+    :param datenum_value: MATLAB datenum value.
+    :returns: ``(year, month, day)`` tuple.
+    """
     from datetime import datetime, timedelta
 
     dt = datetime.fromordinal(int(datenum_value)) + timedelta(days=datenum_value % 1) - timedelta(days=366)
@@ -122,10 +171,20 @@ def _datenum_to_date(datenum_value: float) -> tuple[int, int, int]:
 
 
 def _ensure_dir(path: Path) -> None:
+    """Create a directory and parents if missing.
+
+    :param path: Directory path to create.
+    """
     path.mkdir(parents=True, exist_ok=True)
 
 
 def _clr_stops_to_cmap(stops: list[tuple[float, tuple[int, int, int]]], name: str) -> LinearSegmentedColormap:
+    """Convert color stops to a matplotlib linear segmented colormap.
+
+    :param stops: List of ``(position, (r, g, b))`` entries.
+    :param name: Colormap name.
+    :returns: Matplotlib colormap.
+    """
     color_list: list[tuple[float, tuple[float, float, float]]] = []
     for position, rgb in stops:
         color_list.append((position, (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)))
@@ -133,7 +192,13 @@ def _clr_stops_to_cmap(stops: list[tuple[float, tuple[int, int, int]]], name: st
 
 
 def load_clrmap_file(clrmap_path: str | Path) -> LinearSegmentedColormap:
-    """Load a MATLAB-style .clrmap file into a matplotlib colormap."""
+    """Load a MATLAB-style .clrmap file into a matplotlib colormap.
+
+    :param clrmap_path: Path to the .clrmap file.
+    :returns: Matplotlib colormap.
+    :raises FileNotFoundError: If the file does not exist.
+    :raises ValueError: If no color stops are found.
+    """
     path = Path(clrmap_path)
     if not path.exists():
         raise FileNotFoundError(f"Colormap file not found: {path}")
@@ -169,7 +234,13 @@ def load_clrmap_file(clrmap_path: str | Path) -> LinearSegmentedColormap:
 
 
 def get_named_colormap(name: str, cmap_file: str | Path | None = None):
-    """Get plotting colormap by name or custom .clrmap file."""
+    """Get plotting colormap by name or custom .clrmap file.
+
+    :param name: Colormap name (kg2, vintage, turbo, viridis).
+    :param cmap_file: Optional .clrmap file path.
+    :returns: Matplotlib colormap.
+    :raises ValueError: If the name is unsupported.
+    """
     if cmap_file is not None:
         return load_clrmap_file(cmap_file)
 
@@ -186,7 +257,13 @@ def get_named_colormap(name: str, cmap_file: str | Path | None = None):
 
 
 def load_raw_surveys(nc_dir: str | Path) -> list[RawSurvey]:
-    """Load all .nc bathymetry surveys from a directory."""
+    """Load all .nc bathymetry surveys from a directory.
+
+    :param nc_dir: Directory containing netCDF files.
+    :returns: List of raw surveys sorted by time.
+    :raises FileNotFoundError: If no .nc files are found.
+    :raises ValueError: If file naming or grid shapes are invalid.
+    """
     nc_path = Path(nc_dir)
     nc_files = sorted(nc_path.glob("*.nc"))
     if not nc_files:
@@ -261,7 +338,11 @@ def load_raw_surveys(nc_dir: str | Path) -> list[RawSurvey]:
 
 
 def save_raw_surveys_mat(surveys: list[RawSurvey], out_path: str | Path) -> None:
-    """Save raw survey list to MATLAB .mat file."""
+    """Save raw survey list to MATLAB .mat file.
+
+    :param surveys: Raw surveys to serialize.
+    :param out_path: Output .mat path.
+    """
     recs: list[dict[str, Any]] = []
     for s in surveys:
         recs.append(
@@ -281,7 +362,12 @@ def save_raw_surveys_mat(surveys: list[RawSurvey], out_path: str | Path) -> None
 
 
 def remove_surveys_by_date(surveys: list[RawSurvey], dates_to_remove: set[tuple[int, int, int]]) -> list[RawSurvey]:
-    """Return surveys excluding any that match a YYYY-MM-DD date tuple."""
+    """Return surveys excluding any that match a YYYY-MM-DD date tuple.
+
+    :param surveys: Raw survey list.
+    :param dates_to_remove: Set of ``(year, month, day)`` tuples.
+    :returns: Filtered survey list.
+    """
     filtered: list[RawSurvey] = []
     for s in surveys:
         y, m, d = _datenum_to_date(s.datenum)
@@ -291,7 +377,12 @@ def remove_surveys_by_date(surveys: list[RawSurvey], dates_to_remove: set[tuple[
 
 
 def compute_domain_extents(surveys: list[RawSurvey]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute max extents and overlap extents in km."""
+    """Compute max extents and overlap extents in km.
+
+    :param surveys: Raw surveys to analyze.
+    :returns: ``(x_lims, y_lims, x_min, y_min)`` in km.
+    :raises ValueError: If surveys is empty.
+    """
     if not surveys:
         raise ValueError("No surveys provided for extent computation")
 
@@ -336,11 +427,11 @@ def compute_domain_extents(surveys: list[RawSurvey]) -> tuple[np.ndarray, np.nda
 def _plot_extent_outline(ax, survey: RawSurvey, color, method: str = "mask") -> None:
     """Plot one survey outline for the extents figure.
 
-    Parameters
-    ----------
-    method : str
-        "mask" traces the valid-data boundary (tighter fit).
-        "convex" uses a convex hull (broader fit).
+    :param ax: Matplotlib axes.
+    :param survey: Raw survey to outline.
+    :param color: Line color.
+    :param method: "mask" for validity boundary or "convex" for hull.
+    :raises ValueError: If method is unsupported.
     """
     method_key = method.lower()
 
@@ -381,7 +472,14 @@ def plot_extents(
     extents_cmap,
     extent_boundary_method: str = "mask",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Plot spatial extents of all raw surveys."""
+    """Plot spatial extents of all raw surveys.
+
+    :param surveys: Raw surveys to plot.
+    :param plot_path: Output image path.
+    :param extents_cmap: Colormap for survey outlines.
+    :param extent_boundary_method: "mask" or "convex" outline method.
+    :returns: ``(x_lims, y_lims, x_min, y_min)`` in km.
+    """
     x_lims, y_lims, x_min, y_min = compute_domain_extents(surveys)
 
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -426,17 +524,16 @@ def plot_raw_surveys(
     mask_nan: bool = True,
 ) -> None:
     """Plot each raw bathymetry survey.
-    
-    Parameters
-    ----------
-    overlap_mask : np.ndarray | None
-        Optional overlap mask to outline on top of each raw survey.
-    overlap_x : np.ndarray | None
-        X grid (meters) that matches overlap_mask.
-    overlap_y : np.ndarray | None
-        Y grid (meters) that matches overlap_mask.
-    mask_nan : bool
-        If True, mask out NaN values so they appear white instead of filled.
+
+    :param surveys: Raw surveys to plot.
+    :param x_lims: Plot x limits in km.
+    :param y_lims: Plot y limits in km.
+    :param out_dir: Output directory for images.
+    :param bathy_cmap: Colormap for bathymetry.
+    :param overlap_mask: Optional overlap mask to outline on plots.
+    :param overlap_x: X grid (meters) matching overlap_mask.
+    :param overlap_y: Y grid (meters) matching overlap_mask.
+    :param mask_nan: If True, mask NaN values in plots.
     """
     out_path = Path(out_dir)
     _ensure_dir(out_path)
@@ -485,8 +582,21 @@ def regrid_surveys(
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
+    parallel: bool = False,
 ) -> tuple[BathyGrid, np.ndarray]:
-    """Interpolate all raw surveys onto a common overlapping grid."""
+    """Interpolate all raw surveys onto a common overlapping grid.
+
+    :param surveys: Raw surveys to regrid.
+    :param dx: Grid spacing in meters.
+    :param x_min: Overlap x limits in km.
+    :param y_min: Overlap y limits in km.
+    :param interp_method: Interpolation method (linear, nearest, cubic).
+    :param boundary_tightness: Boundary tightness for overlap mask.
+    :param overlap_erosion_cells: Erosion iterations on overlap mask.
+    :param parallel: Use joblib parallel interpolation if True.
+    :returns: Tuple of ``(bathy_grid, overlap_mask)``.
+    :raises ValueError: If interp_method is unsupported.
+    """
     x_grid_lim = x_min * 1000.0
     y_grid_lim = y_min * 1000.0
 
@@ -500,29 +610,45 @@ def regrid_surveys(
     nt = len(surveys)
     gz = np.full((gx.shape[0], gx.shape[1], nt), np.nan)
     t = np.zeros((nt, 1), dtype=float)
+    nan_mask = np.zeros(gx.shape, dtype=bool)
 
-    for i, s in enumerate(surveys):
-        t[i, 0] = s.datenum
+    method_key = interp_method.lower()
 
-        x = s.x_raw.reshape(-1)
-        y = s.y_raw.reshape(-1)
-        z = s.z_raw.reshape(-1)
-        mask = ~np.isnan(z)
+    def _interp_one(index: int, survey: RawSurvey) -> tuple[int, float, np.ndarray, np.ndarray]:
+        x = survey.x_raw.ravel()
+        y = survey.y_raw.ravel()
+        z = survey.z_raw.ravel()
+        mask = np.isfinite(z)
 
         points = np.column_stack((x[mask], y[mask]))
-        method = interp_method.lower()
-        if method == "linear":
-            interp = LinearNDInterpolator(points, z[mask], fill_value=np.nan)
-        elif method == "nearest":
-            interp = NearestNDInterpolator(points, z[mask])
-        elif method == "cubic":
-            interp = CloughTocher2DInterpolator(points, z[mask], fill_value=np.nan)
+        z_masked = z[mask]
+        if method_key == "linear":
+            interp = LinearNDInterpolator(points, z_masked, fill_value=np.nan)
+        elif method_key == "nearest":
+            interp = NearestNDInterpolator(points, z_masked)
+        elif method_key == "cubic":
+            interp = CloughTocher2DInterpolator(points, z_masked, fill_value=np.nan)
         else:
             raise ValueError("interp_method must be one of: linear, nearest, cubic")
-        gz[:, :, i] = interp(gx, gy)
+        z_i = interp(gx, gy)
+        return index, float(survey.datenum), z_i, np.isnan(z_i)
+
+    if parallel:
+        from joblib import Parallel, delayed
+
+        results = Parallel(n_jobs=-1)(delayed(_interp_one)(i, s) for i, s in enumerate(surveys))
+        for index, datenum_value, z_i, z_nan in results:
+            t[index, 0] = datenum_value
+            gz[:, :, index] = z_i
+            nan_mask |= z_nan
+    else:
+        for i, s in enumerate(surveys):
+            index, datenum_value, z_i, z_nan = _interp_one(i, s)
+            t[index, 0] = datenum_value
+            gz[:, :, index] = z_i
+            nan_mask |= z_nan
 
     # Remove non-overlapping cells by enforcing NaN where any survey has NaN.
-    nan_mask = np.any(np.isnan(gz), axis=2)
     gz[nan_mask, :] = np.nan
 
     # Enforce minimum-overlap footprint from raw-survey validity masks so the
@@ -555,24 +681,35 @@ def compute_minimum_overlap_mask(
 ) -> np.ndarray:
     """Compute a global overlap mask from all raw-survey validity footprints.
 
-    Returns
-    -------
-    np.ndarray
-        Boolean array with True where all surveys have valid-data footprint.
+    :param raw_surveys: Raw surveys to combine.
+    :param grid_x: Target grid x coordinates (meters).
+    :param grid_y: Target grid y coordinates (meters).
+    :param boundary_tightness: Boundary tightness factor.
+    :param overlap_erosion_cells: Erosion iterations on overlap mask.
+    :returns: Boolean array where all surveys overlap.
+    :raises ValueError: If raw_surveys is empty.
     """
     if not raw_surveys:
         raise ValueError("No raw surveys provided for overlap-mask computation")
 
     overlap_mask = np.ones_like(grid_x, dtype=bool)
+    survey_mask_cache: dict[tuple[int, float], np.ndarray] = {}
 
     for raw in raw_surveys:
-        survey_mask = _compute_single_survey_boundary_mask(
-            raw,
-            grid_x,
-            grid_y,
-            boundary_tightness=boundary_tightness,
-        )
+        cache_key = (id(raw), boundary_tightness)
+        if cache_key in survey_mask_cache:
+            survey_mask = survey_mask_cache[cache_key]
+        else:
+            survey_mask = _compute_single_survey_boundary_mask(
+                raw,
+                grid_x,
+                grid_y,
+                boundary_tightness=boundary_tightness,
+            )
+            survey_mask_cache[cache_key] = survey_mask
         overlap_mask &= survey_mask
+        if not np.any(overlap_mask):
+            break
 
     pre_erosion_mask = overlap_mask.copy()
 
@@ -594,6 +731,7 @@ def compute_minimum_overlap_mask(
 
     if not np.any(overlap_mask):
         nearest_overlap = np.ones_like(grid_x, dtype=bool)
+        grid_points = np.column_stack((grid_y.ravel(), grid_x.ravel()))
         for raw in raw_surveys:
             valid_raw = np.isfinite(raw.z_raw).astype(float)
             x_axis = raw.x_raw[:, 0]
@@ -605,7 +743,7 @@ def compute_minimum_overlap_mask(
                 bounds_error=False,
                 fill_value=0.0,
             )
-            valid_on_grid = valid_interp(np.column_stack((grid_y.ravel(), grid_x.ravel()))).reshape(grid_x.shape)
+            valid_on_grid = valid_interp(grid_points).reshape(grid_x.shape)
             nearest_overlap &= valid_on_grid >= 0.5
         overlap_mask = nearest_overlap
 
@@ -620,8 +758,14 @@ def _compute_single_survey_boundary_mask(
 ) -> np.ndarray:
     """Compute a boundary-like footprint mask for one survey.
 
-    This emulates MATLAB's `boundary(x,y)` behavior more closely than a convex hull
-    by using an alpha-shape-like filter on Delaunay triangles.
+    This emulates MATLAB's ``boundary(x, y)`` behavior by using an
+    alpha-shape-like filter on Delaunay triangles.
+
+    :param raw: Raw survey to analyze.
+    :param grid_x: Target grid x coordinates (meters).
+    :param grid_y: Target grid y coordinates (meters).
+    :param boundary_tightness: Boundary tightness factor.
+    :returns: Boolean mask of the survey footprint on the target grid.
     """
     valid = np.isfinite(raw.z_raw)
     if np.count_nonzero(valid) < 3:
@@ -710,7 +854,11 @@ def _compute_single_survey_boundary_mask(
 
 
 def save_bathy_grid_mat(bathy: BathyGrid, out_path: str | Path) -> None:
-    """Save regridded bathymetry in MATLAB-struct style."""
+    """Save regridded bathymetry in MATLAB-struct style.
+
+    :param bathy: Regridded bathymetry.
+    :param out_path: Output .mat path.
+    """
     savemat(
         str(out_path),
         {
@@ -726,20 +874,33 @@ def save_bathy_grid_mat(bathy: BathyGrid, out_path: str | Path) -> None:
 
 
 def _coerce_mat_struct(value: Any) -> Any:
-    """Extract a scipy.io-loaded MATLAB struct from possible ndarray wrappers."""
+    """Extract a scipy.io-loaded MATLAB struct from ndarray wrappers.
+
+    :param value: Value returned from ``scipy.io.loadmat``.
+    :returns: Unwrapped MATLAB struct or the original value.
+    """
     if isinstance(value, np.ndarray) and value.dtype == object:
         return value.flat[0]
     return value
 
 
 def _to_time_column_vector(t_values: np.ndarray) -> np.ndarray:
-    """Normalize time values to an (nt, 1) MATLAB-like column vector."""
+    """Normalize time values to an (nt, 1) MATLAB-like column vector.
+
+    :param t_values: Time values array.
+    :returns: Column vector of times.
+    """
     t_flat = np.asarray(t_values, dtype=float).reshape(-1)
     return t_flat.reshape(-1, 1)
 
 
 def load_bathy_grid_mat(in_path: str | Path) -> BathyGrid:
-    """Load regridded bathymetry from MATLAB .mat output produced by this workflow."""
+    """Load regridded bathymetry from MATLAB .mat output produced by this workflow.
+
+    :param in_path: Input .mat path.
+    :returns: Regridded bathymetry.
+    :raises ValueError: If the expected struct is missing.
+    """
     mat = loadmat(str(in_path), squeeze_me=True, struct_as_record=False)
     if "bathy" not in mat:
         raise ValueError(f"MAT file does not contain 'bathy' struct: {in_path}")
@@ -755,7 +916,12 @@ def load_bathy_grid_mat(in_path: str | Path) -> BathyGrid:
 
 
 def load_bathy_grid_netcdf(in_path: str | Path) -> BathyGrid:
-    """Load regridded bathymetry from CF-style netCDF output produced by this workflow."""
+    """Load regridded bathymetry from CF-style netCDF output produced by this workflow.
+
+    :param in_path: Input .nc path.
+    :returns: Regridded bathymetry.
+    :raises ValueError: If required variables are missing.
+    """
     with Dataset(str(in_path), "r") as nc:
         if "bathymetry" not in nc.variables:
             raise ValueError(f"NetCDF file missing 'bathymetry' variable: {in_path}")
@@ -780,7 +946,12 @@ def load_bathy_grid_netcdf(in_path: str | Path) -> BathyGrid:
 
 
 def load_bathy_grid(in_path: str | Path) -> BathyGrid:
-    """Load regridded bathymetry from .mat or .nc file path."""
+    """Load regridded bathymetry from .mat or .nc file path.
+
+    :param in_path: Input file path.
+    :returns: Regridded bathymetry.
+    :raises ValueError: If the file extension is unsupported.
+    """
     path = Path(in_path)
     suffix = path.suffix.lower()
     if suffix == ".mat":
@@ -791,7 +962,11 @@ def load_bathy_grid(in_path: str | Path) -> BathyGrid:
 
 
 def load_for_analysis(source: BathyGrid | BathyProcessResult | str | Path) -> BathyGrid:
-    """Return a BathyGrid from either an in-memory object or a saved .mat/.nc file."""
+    """Return a BathyGrid from an in-memory object or a saved .mat/.nc file.
+
+    :param source: BathyGrid, BathyProcessResult, or path to saved file.
+    :returns: BathyGrid instance.
+    """
     if isinstance(source, BathyGrid):
         return source
     if isinstance(source, BathyProcessResult):
@@ -807,7 +982,11 @@ def load_for_analysis(source: BathyGrid | BathyProcessResult | str | Path) -> Ba
 
 
 def _as_bathy_process_result(process_result: BathyProcessResult | str | Path) -> tuple[BathyProcessResult, bool]:
-    """Return a BathyProcessResult and whether it was loaded from file path."""
+    """Return a BathyProcessResult and whether it was loaded from file path.
+
+    :param process_result: Process result or file path.
+    :returns: Tuple of ``(result, loaded_from_file)``.
+    """
     if isinstance(process_result, BathyProcessResult):
         return process_result, False
 
@@ -831,13 +1010,9 @@ def _as_bathy_process_result(process_result: BathyProcessResult | str | Path) ->
 
 def save_bathy_grid_netcdf(bathy: BathyGrid, out_path: str | Path) -> None:
     """Save regridded bathymetry as CF-compliant netCDF file.
-    
-    Creates a netCDF file with:
-    - Dimensions: time, y, x
-    - Coordinate variables: time (days since 1970-01-01), y, x (meters UTM)
-    - Data variable: bathymetry (time, y, x) with bathymetric depth
-    - Grid mapping: UTM 18N projection
-    - Standard CF metadata attributes
+
+    :param bathy: Regridded bathymetry.
+    :param out_path: Output .nc path.
     """
     from datetime import datetime
     
@@ -950,11 +1125,15 @@ def plot_regridded_surveys(
     mask_nan: bool = True,
 ) -> None:
     """Plot each regridded survey.
-    
-    Parameters
-    ----------
-    mask_nan : bool
-        If True, mask out NaN values so they appear white instead of filled.
+
+    :param bathy: Regridded bathymetry.
+    :param raw_surveys: Optional raw surveys for masking logic.
+    :param out_dir: Output directory for images.
+    :param bathy_cmap: Colormap for bathymetry.
+    :param extent_boundary_method: "mask" or "convex" outline method.
+    :param overlap_mask: Optional overlap mask to outline.
+    :param mask_nan: If True, mask NaN values in plots.
+    :raises ValueError: If time dimension mismatches.
     """
     out_path = Path(out_dir)
     _ensure_dir(out_path)
@@ -1070,6 +1249,7 @@ def run_bathy_formatter(
     dx: float = 20.0,
     drop_survey: list[str] | None = None,
     print_raw_survey_dates: bool = True,
+    parallel: bool = False,
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
@@ -1082,12 +1262,25 @@ def run_bathy_formatter(
     mask_nan_plots: bool = True,
 ) -> BathyGrid:
     """Run the full bathy formatter workflow (processing + plotting).
-    
-    Parameters
-    ----------
-    output_format : str
-        Format for regridded output: "netcdf" (CF-compliant, default),
-        "mat" (MATLAB struct), or "both".
+
+    :param nc_dir: Directory containing input .nc files.
+    :param out_dir: Output directory for processed data.
+    :param plot_dir: Output directory for plots.
+    :param dx: Grid spacing in meters.
+    :param drop_survey: Optional list of survey dates to drop (YYYY-MM-DD).
+    :param print_raw_survey_dates: Print raw survey dates if True.
+    :param parallel: Enable parallel interpolation if True.
+    :param interp_method: Interpolation method (linear, nearest, cubic).
+    :param boundary_tightness: Boundary tightness for overlap mask.
+    :param overlap_erosion_cells: Erosion iterations on overlap mask.
+    :param output_format: netcdf, mat, or both.
+    :param bathy_cmap_name: Colormap for bathymetry plots.
+    :param bathy_cmap_file: Optional custom .clrmap file for bathy plots.
+    :param extents_cmap_name: Colormap for extents plot.
+    :param extents_cmap_file: Optional custom .clrmap file for extents plot.
+    :param extent_boundary_method: mask or convex outline method.
+    :param mask_nan_plots: If True, mask NaN values in plots.
+    :returns: Regridded bathymetry.
     """
     process_result = process_bathy_formatter(
         nc_dir=nc_dir,
@@ -1095,6 +1288,7 @@ def run_bathy_formatter(
         dx=dx,
         drop_survey=drop_survey,
         print_raw_survey_dates=print_raw_survey_dates,
+        parallel=parallel,
         interp_method=interp_method,
         boundary_tightness=boundary_tightness,
         overlap_erosion_cells=overlap_erosion_cells,
@@ -1122,22 +1316,25 @@ def process_bathy_formatter(
     dx: float = 20.0,
     drop_survey: list[str] | None = None,
     print_raw_survey_dates: bool = True,
+    parallel: bool = False,
     interp_method: str = "linear",
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
     output_format: str = "netcdf",
 ) -> BathyProcessResult:
     """Run non-plotting bathy formatter steps and save outputs.
-    
-    Parameters
-    ----------
-    drop_survey : list[str] | None
-        Optional list of survey dates to drop (format: YYYY-MM-DD).
-    print_raw_survey_dates : bool
-        If True, print the raw survey dates found in the input dataset.
-    output_format : str
-        Format for regridded output: "netcdf" (CF-compliant, default),
-        "mat" (MATLAB struct), or "both".
+
+    :param nc_dir: Directory containing input .nc files.
+    :param out_dir: Output directory for processed data.
+    :param dx: Grid spacing in meters.
+    :param drop_survey: Optional list of survey dates to drop (YYYY-MM-DD).
+    :param print_raw_survey_dates: Print raw survey dates if True.
+    :param parallel: Enable parallel interpolation if True.
+    :param interp_method: Interpolation method (linear, nearest, cubic).
+    :param boundary_tightness: Boundary tightness for overlap mask.
+    :param overlap_erosion_cells: Erosion iterations on overlap mask.
+    :param output_format: netcdf, mat, or both.
+    :returns: Processing result with outputs.
     """
     out_path = Path(out_dir)
     _ensure_dir(out_path)
@@ -1187,6 +1384,7 @@ def process_bathy_formatter(
         interp_method=interp_method,
         boundary_tightness=boundary_tightness,
         overlap_erosion_cells=overlap_erosion_cells,
+        parallel=parallel,
     )
     
     # Save regridded bathymetry in requested format(s)
@@ -1227,10 +1425,21 @@ def plot_bathy_formatter_outputs(
     overlap_erosion_cells: int = 0,
     mask_nan_plots: bool = True,
 ) -> None:
-    """Generate bathy formatter QC plots from a process result or saved .mat/.nc file path.
+    """Generate bathy formatter QC plots from a process result or saved file.
 
-    If a file path is provided, only regridded plots are generated because raw-survey
-    extents and raw-survey plots require per-survey source data.
+    If a file path is provided, only regridded plots are generated because raw
+    extents and raw survey plots require per-survey source data.
+
+    :param process_result: Process result object or path to saved bathy file.
+    :param plot_dir: Output directory for plots.
+    :param bathy_cmap_name: Colormap for bathymetry plots.
+    :param bathy_cmap_file: Optional custom .clrmap file for bathy plots.
+    :param extents_cmap_name: Colormap for extents plot.
+    :param extents_cmap_file: Optional custom .clrmap file for extents plot.
+    :param extent_boundary_method: mask or convex outline method.
+    :param boundary_tightness: Boundary tightness for overlap mask.
+    :param overlap_erosion_cells: Erosion iterations on overlap mask.
+    :param mask_nan_plots: If True, mask NaN values in plots.
     """
     process_result, loaded_from_file = _as_bathy_process_result(process_result)
 
@@ -1283,6 +1492,10 @@ def plot_bathy_formatter_outputs(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser.
+
+    :returns: Configured argument parser.
+    """
     parser = argparse.ArgumentParser(description="Convert and regrid Bogue Inlet bathymetry .nc files")
     parser.add_argument("--nc-dir", required=True, help="Directory containing input .nc files")
     parser.add_argument("--out-dir", required=True, help="Output directory for .mat files")
@@ -1301,6 +1514,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-print-raw-survey-dates",
         action="store_true",
         help="Disable printing raw survey dates from the input dataset.",
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Enable parallel regridding (default: serial).",
     )
     parser.add_argument(
         "--interp-method",
@@ -1363,6 +1581,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point."""
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -1375,6 +1594,7 @@ def main() -> None:
         dx=args.dx,
         drop_survey=args.drop_survey,
         print_raw_survey_dates=not args.no_print_raw_survey_dates,
+        parallel=args.parallel,
         interp_method=args.interp_method,
         boundary_tightness=args.boundary_tightness,
         overlap_erosion_cells=args.overlap_erosion_cells,
