@@ -28,6 +28,12 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+Optional: install `joblib` to enable parallel regridding in `bathy_formatter`. If missing and `parallel=True`, the code falls back to serial execution with a warning.
+
+```bash
+python -m pip install joblib
+```
+
 For strict reproducibility (CI or exact team sync), install from the lock file instead:
 
 ```bash

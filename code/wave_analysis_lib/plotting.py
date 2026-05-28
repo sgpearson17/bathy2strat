@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 
 def plot_buoy_comparison(df1, df2, buoy_names, stats_dict, plot_dir, running_in_jupyter=True):
@@ -88,84 +89,114 @@ def plot_wave_power_by_survey(wave_power_df, plot_dir, running_in_jupyter=True):
         .reset_index(drop=True)
     )
     master_idx = period_df["survey_idx"].to_numpy()
-    x = np.arange(len(master_idx))
-    x_labels = [
-        f"{row['start_date'].strftime('%Y-%m')}\nto\n{row['end_date'].strftime('%Y-%m')}"
-        for _, row in period_df.iterrows()
-    ]
+    end_dates = period_df["end_date"].to_list()
+    x = mdates.date2num(end_dates)
 
-    fig, ax = plt.subplots(figsize=(max(16, len(master_idx) * 0.55), 7))
-    fig.suptitle(
-        "Cumulative Wave Power Between Survey Dates\n(per Splinter et al. 2014)",
-        fontsize=14,
-        fontweight="bold",
-    )
+    if len(x) > 1:
+        median_spacing_days = float(np.nanmedian(np.diff(np.sort(x))))
+    else:
+        median_spacing_days = 30.0
+    group_width = median_spacing_days * 0.7
+    width = group_width / max(len(buoys), 1)
+    default_colors = ["steelblue", "darkorange", "seagreen", "slateblue"]
+    color_map = {
+        "noaa_41159": "steelblue",
+        "noaa_41110": "darkorange",
+    }
 
-    ax2 = ax.twinx()
-    width = 0.8 / max(len(buoys), 1)
-    colors = ["steelblue", "darkorange", "seagreen", "slateblue"]
-
-    for i, buoy_name in enumerate(buoys):
-        color = colors[i % len(colors)]
-        buoy_df = wave_power_df[wave_power_df["buoy"] == buoy_name].set_index("survey_idx").reindex(master_idx)
-
-        power_series = buoy_df["cum_wave_power_MWh_m"]
-        maxhs_series = buoy_df["max_Hs"]
-
-        offsets = x - 0.4 + (i + 0.5) * width
-        valid_mask = power_series.notna().to_numpy()
-        bars = ax.bar(
-            offsets[valid_mask],
-            power_series.to_numpy()[valid_mask],
-            width=width,
-            color=color,
-            edgecolor="black",
-            alpha=0.8,
-            label=f"{buoy_name} wave power",
+    def _plot_wave_power_series(power_col, title_suffix, filename):
+        fig, ax = plt.subplots(figsize=(max(16, len(master_idx) * 0.55), 7))
+        fig.suptitle(
+            "Cumulative Wave Power Between Survey Dates\n(per Splinter et al. 2014)",
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax.set_title(
+            f"Side-by-Side Period-Integrated Wave Power by Buoy ({title_suffix})",
+            fontweight="bold",
         )
 
-        for bar, val in zip(bars, power_series.to_numpy()[valid_mask]):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                bar.get_height(),
-                f"{val:.1f}",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                rotation=90,
+        ax2 = ax.twinx()
+
+        for i, buoy_name in enumerate(buoys):
+            color = color_map.get(buoy_name, default_colors[i % len(default_colors)])
+            buoy_df = wave_power_df[wave_power_df["buoy"] == buoy_name].set_index("survey_idx").reindex(master_idx)
+
+            power_series = buoy_df[power_col]
+            maxhs_series = buoy_df["max_Hs"]
+
+            offsets = x - group_width / 2.0 + (i + 0.5) * width
+            valid_mask = power_series.notna().to_numpy()
+            bars = ax.bar(
+                offsets[valid_mask],
+                power_series.to_numpy()[valid_mask],
+                width=width,
+                color=color,
+                edgecolor="black",
+                alpha=0.8,
+                label=f"{buoy_name} wave power",
             )
 
-        ax2.plot(
-            x,
-            maxhs_series.to_numpy(),
-            linestyle="--",
-            marker="o",
-            linewidth=1.8,
-            markersize=4,
-            color=color,
-            alpha=0.9,
-            label=f"{buoy_name} max Hs",
+            for bar, val in zip(bars, power_series.to_numpy()[valid_mask]):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    bar.get_height(),
+                    f"{val:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    rotation=90,
+                )
+
+            ax2.plot(
+                x,
+                maxhs_series.to_numpy(),
+                linestyle="--",
+                marker="o",
+                linewidth=1.8,
+                markersize=4,
+                color=color,
+                alpha=0.9,
+                label=f"{buoy_name} max Hs",
+            )
+
+        ax.set_ylabel("Wave Power [MWh/m]", fontweight="bold", fontsize=11)
+        ax.set_xlabel("Survey Interval (end date)", fontweight="bold")
+        ax.xaxis_date()
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        fig.autofmt_xdate(rotation=45, ha="right")
+        ax.grid(True, alpha=0.3, axis="y")
+
+        ax2.set_ylabel("Max Hs [m]", fontweight="bold", fontsize=11)
+
+        handles1, labels1 = ax.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(handles1 + handles2, labels1 + labels2, loc="upper left", fontsize=8)
+
+        plt.tight_layout()
+        output_file = plot_dir / filename
+        fig.savefig(output_file, dpi=300, bbox_inches="tight")
+        print(f"Figure saved: {output_file}")
+
+        if running_in_jupyter:
+            plt.show()
+        else:
+            plt.close(fig)
+
+    _plot_wave_power_series(
+        "cum_wave_power_MWh_m",
+        "all conditions",
+        "Cumulative_Wave_Power_Survey_Periods.png",
+    )
+    if "cum_wave_power_above_MWh_m" in wave_power_df.columns:
+        _plot_wave_power_series(
+            "cum_wave_power_above_MWh_m",
+            "Hs >= storm threshold",
+            "Cumulative_Wave_Power_Survey_Periods_Above_Threshold.png",
         )
-
-    ax.set_ylabel("Wave Power [MWh/m]", fontweight="bold", fontsize=11)
-    ax.set_xlabel("Survey Interval", fontweight="bold")
-    ax.set_title("Side-by-Side Period-Integrated Wave Power by Buoy", fontweight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=8)
-    ax.grid(True, alpha=0.3, axis="y")
-
-    ax2.set_ylabel("Max Hs [m]", fontweight="bold", fontsize=11)
-
-    handles1, labels1 = ax.get_legend_handles_labels()
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(handles1 + handles2, labels1 + labels2, loc="upper left", fontsize=8)
-
-    plt.tight_layout()
-    output_file = plot_dir / "Cumulative_Wave_Power_Survey_Periods.png"
-    fig.savefig(output_file, dpi=300, bbox_inches="tight")
-    print(f"Figure saved: {output_file}")
-
-    if running_in_jupyter:
-        plt.show()
-    else:
-        plt.close()
+    if "cum_wave_power_below_MWh_m" in wave_power_df.columns:
+        _plot_wave_power_series(
+            "cum_wave_power_below_MWh_m",
+            "Hs < storm threshold",
+            "Cumulative_Wave_Power_Survey_Periods_Below_Threshold.png",
+        )

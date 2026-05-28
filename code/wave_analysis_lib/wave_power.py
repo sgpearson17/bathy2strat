@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-def load_survey_dates(survey_file_path):
+def load_survey_dates(survey_file_path, drop_survey=None):
     """Load survey dates from text file (one date per line, ISO format)."""
     dates = []
     with open(survey_file_path, "r", encoding="utf-8") as f:
@@ -16,7 +16,15 @@ def load_survey_dates(survey_file_path):
                     dates.append(date)
                 except Exception:
                     print(f"Warning: Could not parse date: {line}")
-    return sorted(dates)
+    dates = sorted(dates)
+
+    if drop_survey:
+        drop_dates = pd.to_datetime(list(drop_survey), errors="coerce")
+        drop_dates = {d.normalize() for d in drop_dates if pd.notna(d)}
+        if drop_dates:
+            dates = [d for d in dates if d.normalize() not in drop_dates]
+
+    return dates
 
 
 def reconstruct_buoy_dataframe(buoy_data_dict):
@@ -36,7 +44,7 @@ def reconstruct_buoy_dataframe(buoy_data_dict):
     return dfs
 
 
-def calculate_cumulative_wave_power(df, date_start, date_end, date_label=None):
+def calculate_cumulative_wave_power(df, date_start, date_end, date_label=None, storm_threshold_m=2.0):
     """
     Calculate cumulative wave power per Splinter et al. (2014).
 
@@ -56,18 +64,24 @@ def calculate_cumulative_wave_power(df, date_start, date_end, date_label=None):
     df_period["power"] = (rho * g**2) / (64 * np.pi) * df_period["Hs"] ** 2 * df_period["Tp"] * df_period["time_diff"]
 
     cum_power = df_period["power"].sum() / 1e6
+    above_mask = df_period["Hs"] >= storm_threshold_m
+    below_mask = df_period["Hs"] < storm_threshold_m
+    cum_power_above = df_period.loc[above_mask, "power"].sum() / 1e6
+    cum_power_below = df_period.loc[below_mask, "power"].sum() / 1e6
 
     hs_stats = {
         "mean_Hs": df_period["Hs"].mean(),
         "max_Hs": df_period["Hs"].max(),
         "n_records": len(df_period),
         "n_days": (date_end - date_start).days,
+        "cum_power_above_MWh_m": cum_power_above,
+        "cum_power_below_MWh_m": cum_power_below,
     }
 
     return cum_power, len(df_period), hs_stats
 
 
-def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None):
+def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None, storm_threshold_m=2.0):
     """Calculate cumulative wave power between consecutive survey dates."""
     results = []
 
@@ -77,7 +91,7 @@ def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None
 
         for buoy_name, df in buoy_dfs.items():
             cum_power, _n_records, hs_stats = calculate_cumulative_wave_power(
-                df, start_date, end_date, f"{buoy_name}_{i}"
+                df, start_date, end_date, f"{buoy_name}_{i}", storm_threshold_m=storm_threshold_m
             )
 
             if cum_power is not None:
@@ -92,6 +106,8 @@ def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None
                         "mean_Hs": hs_stats["mean_Hs"],
                         "max_Hs": hs_stats["max_Hs"],
                         "n_records": hs_stats["n_records"],
+                        "cum_wave_power_above_MWh_m": hs_stats["cum_power_above_MWh_m"],
+                        "cum_wave_power_below_MWh_m": hs_stats["cum_power_below_MWh_m"],
                     }
                 )
 

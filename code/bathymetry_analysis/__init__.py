@@ -23,6 +23,14 @@ from .stratigraphy import (
     load_transects_from_shapefiles,
     run_stratigraphy_workflow,
 )
+from .morphodynamic_analysis import (
+    MorphodynamicResult,
+    compute_morphodynamic_stats,
+    plot_change_maps,
+    plot_volume_timeseries,
+    run_morphodynamic_analysis,
+    save_morphodynamic_csv,
+)
 
 __all__ = [
     "BathyProcessResult",
@@ -44,4 +52,10 @@ __all__ = [
     "load_bathy_mat_known_structure",
     "load_transects_from_shapefiles",
     "run_stratigraphy_workflow",
+    "MorphodynamicResult",
+    "compute_morphodynamic_stats",
+    "plot_change_maps",
+    "plot_volume_timeseries",
+    "run_morphodynamic_analysis",
+    "save_morphodynamic_csv",
 ]

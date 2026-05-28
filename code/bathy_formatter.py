@@ -634,13 +634,21 @@ def regrid_surveys(
         return index, float(survey.datenum), z_i, np.isnan(z_i)
 
     if parallel:
-        from joblib import Parallel, delayed
+        try:
+            from joblib import Parallel, delayed
 
-        results = Parallel(n_jobs=-1)(delayed(_interp_one)(i, s) for i, s in enumerate(surveys))
-        for index, datenum_value, z_i, z_nan in results:
-            t[index, 0] = datenum_value
-            gz[:, :, index] = z_i
-            nan_mask |= z_nan
+            results = Parallel(n_jobs=-1)(delayed(_interp_one)(i, s) for i, s in enumerate(surveys))
+            for index, datenum_value, z_i, z_nan in results:
+                t[index, 0] = datenum_value
+                gz[:, :, index] = z_i
+                nan_mask |= z_nan
+        except ModuleNotFoundError:
+            print("WARNING: joblib is not installed; falling back to serial regridding. Install joblib to enable parallel execution.")
+            for i, s in enumerate(surveys):
+                index, datenum_value, z_i, z_nan = _interp_one(i, s)
+                t[index, 0] = datenum_value
+                gz[:, :, index] = z_i
+                nan_mask |= z_nan
     else:
         for i, s in enumerate(surveys):
             index, datenum_value, z_i, z_nan = _interp_one(i, s)

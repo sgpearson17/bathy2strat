@@ -30,12 +30,16 @@ def compare_buoys_overlapping(buoy_data):
         (df_buoy2["datetime"] >= overlap_start) & (df_buoy2["datetime"] <= overlap_end)
     ].reset_index(drop=True)
 
-    df_merged = pd.merge(
-        df_buoy1_overlap.rename(columns={"Hs": "Hs_buoy1"}),
-        df_buoy2_overlap.rename(columns={"Hs": "Hs_buoy2"}),
+    df_buoy1_overlap = df_buoy1_overlap.sort_values("datetime").rename(columns={"Hs": "Hs_buoy1"})
+    df_buoy2_overlap = df_buoy2_overlap.sort_values("datetime").rename(columns={"Hs": "Hs_buoy2"})
+
+    df_merged = pd.merge_asof(
+        df_buoy1_overlap,
+        df_buoy2_overlap,
         on="datetime",
-        how="inner",
-    )
+        direction="nearest",
+        tolerance=pd.Timedelta(minutes=30),
+    ).dropna(subset=["Hs_buoy2"])
 
     print(f"Overlapping period: {overlap_start.date()} to {overlap_end.date()}")
     print(f"  {buoy_names[0]}: {len(df_buoy1_overlap)} records (before alignment)")
