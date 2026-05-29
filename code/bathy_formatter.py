@@ -1229,7 +1229,15 @@ def plot_regridded_surveys(
             )
 
         y, m = _datenum_to_year_month(float(t_vals[i]))
-        ax.text(307.9, 3835.9, f"{y:04d}-{m:02d}", fontsize=16, weight="bold", style="italic")
+        ax.text(
+            0.02,
+            0.95,
+            f"{y:04d}-{m:02d}",
+            transform=ax.transAxes,
+            fontsize=16,
+            weight="bold",
+            style="italic",
+        )
 
         ax.set_xlim(x_lims)
         ax.set_ylim(y_lims)

@@ -16,6 +16,19 @@ from .bathy import BathyGrid, BathyProcessResult, load_for_analysis
 
 @dataclass
 class MorphodynamicResult:
+    """Container for morphodynamic change outputs.
+
+    :ivar bathy: Source bathymetry grid.
+    :ivar change_grids: 3D array of stepwise elevation changes.
+    :ivar step_labels: Human-readable step labels (start -> end).
+    :ivar step_times: MATLAB datenums for step endpoints.
+    :ivar rel_times: MATLAB datenums for relative-to-first steps.
+    :ivar step_stats: DataFrame of stepwise volume metrics.
+    :ivar rel_stats: DataFrame of cumulative volume metrics.
+    :ivar grid_area_m2: Grid cell area in square meters.
+    :ivar vmax: Symmetric plotting limit for change maps.
+    :ivar overlap_mask: Optional overlap mask used for plotting.
+    """
     bathy: BathyGrid
     change_grids: np.ndarray
     step_labels: list[str]
@@ -29,28 +42,58 @@ class MorphodynamicResult:
 
 
 def _datenum_to_year_month(datenum_value: float) -> tuple[int, int]:
+    """Convert MATLAB datenum to year and month.
+
+    Args:
+        datenum_value: MATLAB datenum float.
+
+    Returns:
+        Tuple of ``(year, month)``.
+    """
     value = float(np.asarray(datenum_value).reshape(-1)[0])
     dt = datetime.fromordinal(int(value)) + timedelta(days=value % 1) - timedelta(days=366)
     return dt.year, dt.month
 
 
 def _datenum_to_datetime(datenum_value: float) -> datetime:
+    """Convert MATLAB datenum to ``datetime``.
+
+    Args:
+        datenum_value: MATLAB datenum float.
+
+    Returns:
+        Converted ``datetime``.
+    """
     value = float(np.asarray(datenum_value).reshape(-1)[0])
     return datetime.fromordinal(int(value)) + timedelta(days=value % 1) - timedelta(days=366)
 
 
 def _format_step_label(t0: float, t1: float) -> str:
+    """Format a date interval label from two MATLAB datenums."""
     y0, m0 = _datenum_to_year_month(t0)
     y1, m1 = _datenum_to_year_month(t1)
     return f"{y0:04d}-{m0:02d} -> {y1:04d}-{m1:02d}"
 
 
 def _format_time_label(t_value: float) -> str:
+    """Format a year-month label from a MATLAB datenum."""
     y, m = _datenum_to_year_month(t_value)
     return f"{y:04d}-{m:02d}"
 
 
 def _grid_spacing_from_mesh(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Infer grid spacing from 1D or 2D coordinate arrays.
+
+    Args:
+        x: X coordinates (1D or meshgrid).
+        y: Y coordinates (1D or meshgrid).
+
+    Returns:
+        Tuple of ``(dx, dy)`` in coordinate units.
+
+    Raises:
+        ValueError: If spacing cannot be determined.
+    """
     if x.ndim == 2:
         dx_vals = np.diff(x[0, :])
     else:
@@ -69,6 +112,15 @@ def _grid_spacing_from_mesh(x: np.ndarray, y: np.ndarray) -> tuple[float, float]
 
 
 def _compute_volume_stats(delta: np.ndarray, cell_area: float) -> tuple[float, float, float, float]:
+    """Compute erosion/accretion/gross/net volumes for a change grid.
+
+    Args:
+        delta: 2D change grid.
+        cell_area: Grid cell area in square meters.
+
+    Returns:
+        Tuple of ``(erosion, accretion, gross, net)`` in cubic meters.
+    """
     valid = np.isfinite(delta)
     if not np.any(valid):
         return 0.0, 0.0, 0.0, 0.0
@@ -84,6 +136,18 @@ def compute_morphodynamic_stats(
     source: BathyGrid | BathyProcessResult | str | Path,
     percentile: float = 98.0,
 ) -> MorphodynamicResult:
+    """Compute morphodynamic change grids and volume statistics.
+
+    Args:
+        source: Bathymetry source (grid, process result, or file path).
+        percentile: Percentile for symmetric change-map scaling.
+
+    Returns:
+        ``MorphodynamicResult`` with change grids and summary tables.
+
+    Raises:
+        ValueError: If the bathymetry stack is invalid.
+    """
     overlap_mask = None
     if isinstance(source, BathyProcessResult):
         overlap_mask = source.overlap_mask
@@ -174,6 +238,15 @@ def compute_morphodynamic_stats(
 
 
 def save_morphodynamic_csv(result: MorphodynamicResult, csv_path: str | Path) -> Path:
+    """Save combined step and cumulative statistics to CSV.
+
+    Args:
+        result: Morphodynamic result to serialize.
+        csv_path: Output CSV path.
+
+    Returns:
+        Path to the saved CSV.
+    """
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     combined = pd.concat([result.step_stats, result.rel_stats], ignore_index=True)
@@ -187,6 +260,17 @@ def plot_change_maps(
     cmap_name: str = "RdBu_r",
     levels: int = 41,
 ) -> list[Path]:
+    """Plot stepwise change maps for each survey interval.
+
+    Args:
+        result: Morphodynamic result to plot.
+        plot_dir: Output directory for images.
+        cmap_name: Matplotlib colormap name.
+        levels: Number of contour levels.
+
+    Returns:
+        List of saved plot paths.
+    """
     out_dir = Path(plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -240,6 +324,16 @@ def plot_volume_timeseries(
     plot_dir: str | Path,
     filename: str = "morphodynamics_volume_timeseries.png",
 ) -> Path:
+    """Plot cumulative and stepwise volume change time series.
+
+    Args:
+        result: Morphodynamic result to plot.
+        plot_dir: Output directory for the image.
+        filename: Output filename.
+
+    Returns:
+        Path to the saved plot.
+    """
     out_dir = Path(plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,6 +398,18 @@ def run_morphodynamic_analysis(
     cmap_name: str = "RdBu_r",
     percentile: float = 98.0,
 ) -> MorphodynamicResult:
+    """Run the full morphodynamic workflow and write plots/CSV.
+
+    Args:
+        source: Bathymetry source (grid, process result, or file path).
+        plot_dir: Output directory for plots.
+        csv_path: Optional CSV output path.
+        cmap_name: Matplotlib colormap name.
+        percentile: Percentile for change-map scaling.
+
+    Returns:
+        Morphodynamic result with computed statistics.
+    """
     result = compute_morphodynamic_stats(source, percentile=percentile)
     plot_morphodynamic_results(result, plot_dir, csv_path=csv_path, cmap_name=cmap_name)
     return result
@@ -315,6 +421,17 @@ def plot_morphodynamic_results(
     csv_path: str | Path | None = None,
     cmap_name: str = "RdBu_r",
 ) -> Path:
+    """Write morphodynamic plots and summary CSV.
+
+    Args:
+        result: Morphodynamic result to serialize/plot.
+        plot_dir: Output directory for plots.
+        csv_path: Optional CSV output path.
+        cmap_name: Matplotlib colormap name.
+
+    Returns:
+        Path to the written CSV file.
+    """
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
 

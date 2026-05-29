@@ -15,6 +15,8 @@ from pyproj import CRS, Transformer
 from scipy.interpolate import RegularGridInterpolator
 from scipy.io import loadmat
 
+from .bathy import BathyGrid, load_bathy_grid
+
 
 MHW = 0.358
 MSL = -0.112
@@ -131,6 +133,184 @@ def datetime64_to_datenum(values: Iterable[np.datetime64]) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
+def _datenum_to_years(t_vals: np.ndarray) -> np.ndarray:
+    import datetime as dt
+
+    years = []
+    for value in np.asarray(t_vals, dtype=float).reshape(-1):
+        ordinal = int(value)
+        frac = value - ordinal
+        py_dt = dt.datetime.fromordinal(ordinal) + dt.timedelta(days=frac) - dt.timedelta(days=366)
+        years.append(py_dt.year + (py_dt.timetuple().tm_yday - 1) / 365.0)
+    return np.asarray(years, dtype=float)
+
+
+def _resolve_time_axis(t_vals: np.ndarray | None, nt: int, start_at_zero: bool) -> tuple[np.ndarray, str]:
+    if t_vals is None:
+        time = np.arange(nt, dtype=float)
+        label = "Years since start" if start_at_zero else "Year"
+        return time, label
+
+    years = _datenum_to_years(t_vals)
+    if start_at_zero:
+        return years - years[0], "Years since start"
+    return years, "Year"
+
+
+def compute_deposit_elev_1d(z_stack: np.ndarray) -> np.ndarray:
+    """Apply the erosion rule to build deposit elevations for 1D profiles."""
+    deposit_elev = z_stack.copy()
+    nt = z_stack.shape[0]
+    for tt in range(1, nt):
+        dz = z_stack[tt, :] - z_stack[tt - 1, :]
+        deposit_elev[tt, :] = z_stack[tt, :]
+        erosion = dz < 0
+        if np.any(erosion):
+            for qq in range(0, tt):
+                prev = deposit_elev[qq, :]
+                update = erosion & (deposit_elev[tt, :] < prev)
+                prev[update] = deposit_elev[tt, :][update]
+                deposit_elev[qq, :] = prev
+    return deposit_elev
+
+
+def compute_remaining_volumes(z_stack: np.ndarray, dx: float, base: float) -> tuple[np.ndarray, float]:
+    """Compute remaining deposit volumes per deposit year through time (unit width)."""
+    nt = z_stack.shape[0]
+    remaining = np.zeros((nt, nt), dtype=float)
+    initial_total = None
+    for t in range(nt):
+        dep = compute_deposit_elev_1d(z_stack[: t + 1, :])
+        thickness = np.zeros((t + 1, z_stack.shape[1]), dtype=float)
+        thickness[0, :] = np.maximum(0.0, dep[0, :] - base)
+        for k in range(1, t + 1):
+            thickness[k, :] = np.maximum(0.0, dep[k, :] - dep[k - 1, :])
+        vols = np.nansum(thickness, axis=1) * dx
+        remaining[t, : t + 1] = vols
+        if t == 0:
+            initial_total = np.nansum(vols)
+    if initial_total is None or initial_total == 0:
+        initial_total = 1.0
+    return remaining, initial_total
+
+
+def plot_stratigraphy_stack(
+    cube: BathyCube,
+    result: StratigraphyResult,
+    out_path: Path,
+    scenario: str,
+    time_vals: np.ndarray | None = None,
+    start_year_at_zero: bool = True,
+    plot_xlim: tuple[float, float] | None = None,
+    plot_ylim: tuple[float, float] | None = None,
+) -> None:
+    """Plot stacked stratigraphy plus preservation metrics for a 1D transect cube."""
+    x_m = cube.x[0, :]
+    z_stack = cube.z[0, :, :].T
+    deposit_elev = compute_deposit_elev_1d(z_stack)
+    nt = z_stack.shape[0]
+    colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
+    dx = float(x_m[1] - x_m[0]) if x_m.size > 1 else 1.0
+
+    fig = plt.figure(figsize=(14.5, 7.4))
+    gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 0.7], hspace=0.45, wspace=0.25)
+    axes_top = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
+    axes_bottom = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[1, 2])]
+
+    ax = axes_top[0]
+    for tt in range(nt):
+        ax.plot(x_m, z_stack[tt, :], color=colors[tt], linewidth=0.9)
+    ax.set_title("Raw surfaces")
+    ax.set_xlabel("Distance [m]")
+    ax.set_ylabel("Elevation [m]")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes_top[1]
+    for tt in range(nt):
+        ax.plot(x_m, deposit_elev[tt, :], color=colors[tt], linewidth=0.9)
+    ax.set_title("After erosion rule")
+    ax.set_xlabel("Distance [m]")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes_top[2]
+    min_elev = np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev)])
+    max_elev = np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev)])
+    base = min_elev - 0.01 * abs(min_elev)
+    cumulative = base + np.zeros_like(x_m)
+    ax.fill_between(x_m, base, deposit_elev[0, :], color=colors[0], alpha=0.75)
+    cumulative = deposit_elev[0, :]
+    for tt in range(1, nt):
+        layer = np.maximum(0.0, deposit_elev[tt, :] - deposit_elev[tt - 1, :])
+        upper = cumulative + layer
+        ax.fill_between(x_m, cumulative, upper, color=colors[tt], alpha=0.75)
+        cumulative = upper
+    for tt in range(nt):
+        ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
+    ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
+    ax.set_title("Stacked stratigraphy")
+    ax.set_xlabel("Distance [m]")
+    ax.grid(True, alpha=0.3)
+
+    y_min = base
+    y_max = max_elev + 0.01 * abs(max_elev)
+    for ax in axes_top:
+        ax.set_ylim(y_min, y_max)
+
+    if scenario == "bruun_slr":
+        if plot_xlim is None:
+            plot_xlim = (-300, 800)
+        if plot_ylim is None:
+            plot_ylim = (-5, 3)
+
+    if plot_xlim is not None:
+        for ax in axes_top:
+            ax.set_xlim(plot_xlim)
+    if plot_ylim is not None:
+        for ax in axes_top:
+            ax.set_ylim(plot_ylim)
+
+    remaining, initial_total = compute_remaining_volumes(z_stack, dx=dx, base=base)
+    time_axis, time_label = _resolve_time_axis(time_vals, nt, start_year_at_zero)
+    for k in range(1, nt):
+        y = remaining[:, k].astype(float)
+        y[:k] = np.nan
+        axes_bottom[0].plot(time_axis, y, linewidth=1.2, color=colors[k])
+        denom = remaining[k, k] if np.isfinite(remaining[k, k]) else 0.0
+        if denom == 0.0:
+            y_norm = np.zeros_like(y)
+            y_norm[:k] = np.nan
+        else:
+            y_norm = y / denom
+        axes_bottom[1].plot(time_axis, y_norm, linewidth=1.2, color=colors[k])
+    axes_bottom[0].set_title("Volume preserved (absolute)")
+    axes_bottom[0].set_xlabel(time_label)
+    axes_bottom[0].set_ylabel("Volume (unit width)")
+    axes_bottom[0].grid(True, alpha=0.3)
+    axes_bottom[1].set_title("Volume preserved (normalized)")
+    axes_bottom[1].set_xlabel(time_label)
+    axes_bottom[1].set_ylabel("Fraction of initial")
+    axes_bottom[1].grid(True, alpha=0.3)
+
+    denom0 = remaining[0, 0] if np.isfinite(remaining[0, 0]) and remaining[0, 0] != 0 else np.nan
+    ratio = np.clip(remaining[:, 0] / denom0, 0.0, 1.0)
+    axes_bottom[2].plot(time_axis, ratio, color="k", linewidth=1.4)
+    axes_bottom[2].set_title("Theseus ratio (t0 preserved)")
+    axes_bottom[2].set_xlabel(time_label)
+    axes_bottom[2].set_ylabel("Fraction of initial")
+    ratio_min = np.nanmin(ratio)
+    if np.isfinite(ratio_min):
+        axes_bottom[2].set_ylim(ratio_min, 1.0)
+    else:
+        axes_bottom[2].set_ylim(0.0, 1.0)
+    axes_bottom[2].grid(True, alpha=0.3)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+
+
 def _coerce_mat_struct(value):
     """Normalize MATLAB structs loaded as object arrays.
 
@@ -172,6 +352,33 @@ def load_bathy_mat_known_structure(path: str | Path) -> BathyCube:
         raise ValueError(f"z spatial shape {z.shape[:2]} does not match x/y shape {x.shape}")
 
     return BathyCube(location=location, t=t, x=x, y=y, z=z)
+
+
+def _bathygrid_to_cube(grid: BathyGrid) -> BathyCube:
+    """Convert a :class:`BathyGrid` to a :class:`BathyCube`.
+
+    :param grid: Regridded bathymetry grid.
+    :returns: BathyCube representation.
+    """
+    t = np.asarray(grid.t, dtype=float).reshape(-1)
+    return BathyCube(location=grid.location, t=t, x=grid.x, y=grid.y, z=grid.z)
+
+
+def load_bathy_cube(path: str | Path) -> BathyCube:
+    """Load bathymetry from .mat or .nc into a :class:`BathyCube`.
+
+    :param path: Path to bathymetry file.
+    :returns: BathyCube instance.
+    :raises ValueError: If the file extension is unsupported.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".mat":
+        return load_bathy_mat_known_structure(path)
+    if suffix == ".nc":
+        grid = load_bathy_grid(path)
+        return _bathygrid_to_cube(grid)
+    raise ValueError(f"Unsupported bathy file extension: {path.suffix}. Use .mat or .nc")
 
 
 def _derive_xy_axes(x2d: np.ndarray, y2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -289,18 +496,12 @@ def compute_stratigraphy(bathy: BathyCube, config: StratigraphyConfig) -> Strati
         t_full_global = t_full_dn
         deposit_thk_full_global = deposit_thk_full
 
-    z_min = np.nanmin(z[:, :, initial_idx:])
-    total_sed_vol_per_year = np.nansum((z - z_min) * (config.dx**2), axis=(0, 1))
-
-    if nt > 0:
-        deposit_per_year[0, 0] = total_sed_vol_per_year[0]
-
-    theseus_ratio = np.full((nt, nt), np.nan, dtype=float)
-    for tt in range(nt):
-        deposit_per_year[0, tt] = total_sed_vol_per_year[tt] - np.nansum(deposit_per_year[1:, tt])
-        denom = deposit_per_year[tt, tt]
-        if np.isfinite(denom) and denom != 0:
-            theseus_ratio[tt, :] = deposit_per_year[tt, :] / denom
+    total_sed_vol_per_year, deposit_per_year, theseus_ratio = compute_preservation_potential(
+        z=z,
+        initial_idx=initial_idx,
+        dx=config.dx,
+        deposit_per_year=deposit_per_year,
+    )
 
     return StratigraphyResult(
         t=t,
@@ -313,6 +514,37 @@ def compute_stratigraphy(bathy: BathyCube, config: StratigraphyConfig) -> Strati
         total_sed_vol_per_year=total_sed_vol_per_year,
         theseus_ratio=theseus_ratio,
     )
+
+
+def compute_preservation_potential(
+    z: np.ndarray,
+    initial_idx: int,
+    dx: float,
+    deposit_per_year: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute preservation potential and Theseus ratio metrics.
+
+    :param z: Bathymetry stack, shape (ny, nx, nt).
+    :param initial_idx: Baseline survey index.
+    :param dx: Grid spacing in meters.
+    :param deposit_per_year: Deposit volume matrix to update.
+    :returns: Tuple ``(total_sed_vol_per_year, deposit_per_year, theseus_ratio)``.
+    """
+    z_min = np.nanmin(z[:, :, initial_idx:])
+    total_sed_vol_per_year = np.nansum((z - z_min) * (dx**2), axis=(0, 1))
+
+    nt = z.shape[2]
+    if nt > 0:
+        deposit_per_year[0, 0] = total_sed_vol_per_year[0]
+
+    theseus_ratio = np.full((nt, nt), np.nan, dtype=float)
+    for tt in range(nt):
+        deposit_per_year[0, tt] = total_sed_vol_per_year[tt] - np.nansum(deposit_per_year[1:, tt])
+        denom = deposit_per_year[tt, tt]
+        if np.isfinite(denom) and denom != 0:
+            theseus_ratio[tt, :] = deposit_per_year[tt, :] / denom
+
+    return total_sed_vol_per_year, deposit_per_year, theseus_ratio
 
 
 def _extract_line_xy(gdf) -> tuple[np.ndarray, np.ndarray] | None:
@@ -750,9 +982,10 @@ def save_metrics(result: StratigraphyResult, out_dir: str | Path) -> None:
 
 
 def run_stratigraphy_workflow(
-    bathy_mat_path: str | Path,
     output_root: str | Path,
     transect_mode: str,
+    bathy_nc_path: str | Path | None = None,
+    bathy_mat_path: str | Path | None = None,
     shp_dir: str | Path | None = None,
     manual_transects: list[np.ndarray] | None = None,
     source_crs: str | None = None,
@@ -760,7 +993,8 @@ def run_stratigraphy_workflow(
 ) -> StratigraphyResult:
     """Run the full stratigraphy workflow including plotting and exports.
 
-    :param bathy_mat_path: Path to the bathy MAT file.
+    :param bathy_nc_path: Path to the bathy .nc file (preferred).
+    :param bathy_mat_path: Optional path to the bathy MAT file (legacy).
     :param output_root: Root output directory.
     :param transect_mode: ``shapefile``, ``manual``, or ``gui``.
     :param shp_dir: Shapefile directory when using ``shapefile`` mode.
@@ -771,7 +1005,10 @@ def run_stratigraphy_workflow(
     :raises ValueError: If required transect inputs are missing.
     """
     config = config or StratigraphyConfig()
-    bathy = load_bathy_mat_known_structure(bathy_mat_path)
+    bathy_path = bathy_nc_path or bathy_mat_path
+    if bathy_path is None:
+        raise ValueError("bathy_nc_path is required when bathy_mat_path is not provided")
+    bathy = load_bathy_cube(bathy_path)
     result = compute_stratigraphy(bathy, config)
 
     output_root = Path(output_root)
@@ -822,8 +1059,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     :returns: Configured argument parser.
     """
-    parser = argparse.ArgumentParser(description="Compute stratigraphy from MATLAB bathy input")
-    parser.add_argument("--bathy-mat", required=True, help="Path to bathy MAT file with known structure")
+    parser = argparse.ArgumentParser(description="Compute stratigraphy from bathymetry input")
+    parser.add_argument("--bathy-nc", default=None, help="Path to bathy netCDF file")
+    parser.add_argument("--bathy-mat", default=None, help="Path to bathy MAT file with known structure")
     parser.add_argument("--output-root", default=".", help="Root output folder")
     parser.add_argument(
         "--transect-mode",
@@ -844,6 +1082,9 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.bathy_nc is None and args.bathy_mat is None:
+        parser.error("--bathy-nc or --bathy-mat is required")
+
     config = StratigraphyConfig(
         initial_index=args.initial_index,
         dx=args.dx,
@@ -851,6 +1092,7 @@ def main() -> None:
     )
 
     run_stratigraphy_workflow(
+        bathy_nc_path=args.bathy_nc,
         bathy_mat_path=args.bathy_mat,
         output_root=args.output_root,
         transect_mode=args.transect_mode,

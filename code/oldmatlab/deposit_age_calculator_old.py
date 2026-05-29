@@ -1,3 +1,5 @@
+"""Legacy deposit age calculator prototype (deprecated, MATLAB parity draft)."""
+
 import os
 import numpy as np
 import scipy.io as sio
