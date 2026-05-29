@@ -18,7 +18,6 @@ from .stratigraphy import (
     compute_stratigraphy,
     plot_cross_sections,
     plot_stratigraphy_stack,
-    plot_theseus_ratio,
 )
 
 
@@ -301,7 +300,6 @@ def run_synthetic_scenario(
 
     if transects:
         plot_cross_sections(cube, result, list(transects), scenario_dir)
-    plot_theseus_ratio(result, scenario_dir / "TheseusRatio.png")
 
 
 def run_synthetic_scenario_by_name(
