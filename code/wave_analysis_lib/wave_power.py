@@ -1,3 +1,5 @@
+"""Wave power calculations for interval-based morphodynamic comparisons."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -5,7 +7,15 @@ import pandas as pd
 
 
 def load_survey_dates(survey_file_path, drop_survey=None):
-    """Load survey dates from text file (one date per line, ISO format)."""
+    """Load survey dates from a text file.
+
+    Args:
+        survey_file_path: Text file path with one ISO date per line.
+        drop_survey: Optional iterable of dates to exclude.
+
+    Returns:
+        Sorted list of pandas timestamps.
+    """
     dates = []
     with open(survey_file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -28,9 +38,13 @@ def load_survey_dates(survey_file_path, drop_survey=None):
 
 
 def reconstruct_buoy_dataframe(buoy_data_dict):
-    """
-    Reconstruct DataFrame from buoy_data dictionary with wave period estimation.
-    Need Tp for wave power calculation per Splinter et al.
+    """Build buoy dataframes with wave period estimates.
+
+    Args:
+        buoy_data_dict: Mapping of buoy name to dict with ``time`` and ``Hs`` arrays.
+
+    Returns:
+        Dictionary of buoy-name to DataFrame with ``datetime``, ``Hs``, and ``Tp``.
     """
     dfs = {}
     for buoy_name, data in buoy_data_dict.items():
@@ -45,10 +59,21 @@ def reconstruct_buoy_dataframe(buoy_data_dict):
 
 
 def calculate_cumulative_wave_power(df, date_start, date_end, date_label=None, storm_threshold_m=2.0):
-    """
-    Calculate cumulative wave power per Splinter et al. (2014).
+    """Calculate cumulative wave power for a single time interval.
 
-    Equation 3: sum(P) = integral( (rho*g^2/64*pi) * Hs^2 * Tp * dt )
+    Equation 3 (Splinter et al., 2014):
+        sum(P) = integral( (rho*g^2/64*pi) * Hs^2 * Tp * dt )
+
+    Args:
+        df: DataFrame with ``datetime``, ``Hs``, and ``Tp`` columns.
+        date_start: Interval start datetime.
+        date_end: Interval end datetime.
+        date_label: Optional label for the interval (unused, retained for parity).
+        storm_threshold_m: Wave height threshold for storm partitioning.
+
+    Returns:
+        Tuple of ``(cum_power, n_records, stats_dict)``. ``cum_power`` is ``None``
+        when the interval has no data.
     """
     rho = 1025
     g = 9.81
@@ -82,7 +107,17 @@ def calculate_cumulative_wave_power(df, date_start, date_end, date_label=None, s
 
 
 def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None, storm_threshold_m=2.0):
-    """Calculate cumulative wave power between consecutive survey dates."""
+    """Compute wave power between consecutive survey dates.
+
+    Args:
+        buoy_dfs: Mapping of buoy name to wave DataFrame.
+        survey_dates: Ordered list of survey datetimes.
+        buoy_names: Optional list of buoy names to include (unused if None).
+        storm_threshold_m: Threshold for storm partitioning.
+
+    Returns:
+        DataFrame with cumulative wave power metrics for each interval.
+    """
     results = []
 
     for i in range(len(survey_dates) - 1):
@@ -115,7 +150,12 @@ def calculate_wave_power_between_surveys(buoy_dfs, survey_dates, buoy_names=None
 
 
 def save_wave_power_results(wave_power_df, output_path):
-    """Save cumulative wave power results in tab-delimited text format."""
+    """Save cumulative wave power results to a tab-delimited file.
+
+    Args:
+        wave_power_df: DataFrame returned by ``calculate_wave_power_between_surveys``.
+        output_path: Output file path.
+    """
     if wave_power_df.empty:
         print("No wave power results to save.")
         return

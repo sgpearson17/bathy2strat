@@ -1,3 +1,5 @@
+"""Core utilities for loading and plotting NOAA wave data."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +10,19 @@ import matplotlib
 
 
 def validate_directories(data_dirs, plot_dir):
-    """Validate and normalize input directories."""
+    """Validate and normalize input/output directories.
+
+    Args:
+        data_dirs: Iterable of data directory paths to validate.
+        plot_dir: Output directory path for plots.
+
+    Returns:
+        Tuple of ``(data_dirs, plot_dir)`` as resolved ``Path`` objects.
+
+    Raises:
+        FileNotFoundError: If a data directory does not exist.
+        NotADirectoryError: If a data path is not a directory.
+    """
     data_dirs = [Path(d).resolve() for d in data_dirs]
     plot_dir = Path(plot_dir).resolve()
 
@@ -23,7 +37,11 @@ def validate_directories(data_dirs, plot_dir):
 
 
 def setup_plot_style():
-    """Set up matplotlib with a readable bold italic font style."""
+    """Configure matplotlib with a readable bold/italic font style.
+
+    Returns:
+        The name of the selected font family.
+    """
     available_fonts = set(matplotlib.font_manager.get_font_names())
 
     if 'Arial' in available_fonts or 'DejaVu Sans' in available_fonts:
@@ -42,11 +60,20 @@ def setup_plot_style():
     plt.rcParams['font.size'] = 10
 
     print(f"Figure style set to: {font_name}, Bold, Italic")
+    return font_name
 
 
 def load_and_plot_wave_data(data_dirs, plot_dir, show_plot=True, running_in_jupyter=False):
-    """
-    Load NOAA meteorological data from multiple directories and plot wave heights.
+    """Load NOAA meteorological data and plot significant wave height.
+
+    Args:
+        data_dirs: Iterable of directories containing NOAA text files.
+        plot_dir: Output directory for plots.
+        show_plot: If True, display the plot via ``plt.show``.
+        running_in_jupyter: True when running inside a notebook to avoid blocking.
+
+    Returns:
+        Tuple of ``(buoy_data, fig)`` with the assembled data and matplotlib figure.
     """
     column_names = ['YY', 'MM', 'DD', 'hh', 'mm', 'WDIR', 'WSPD', 'GST', 'WVHT',
                     'DPD', 'APD', 'MWD', 'PRES', 'ATMP', 'WTMP', 'DEWP', 'VIS', 'TIDE']

@@ -1,3 +1,5 @@
+"""Plotting utilities for buoy comparisons and wave power summaries."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -6,7 +8,16 @@ import matplotlib.dates as mdates
 
 
 def plot_buoy_comparison(df1, df2, buoy_names, stats_dict, plot_dir, running_in_jupyter=True):
-    """Create comprehensive comparison plots."""
+    """Create comparison plots for overlapping buoy time series.
+
+    Args:
+        df1: DataFrame with ``datetime`` and ``Hs`` for buoy 1.
+        df2: DataFrame with ``datetime`` and ``Hs`` for buoy 2.
+        buoy_names: Two-element list of buoy names.
+        stats_dict: Output from ``calculate_buoy_statistics``.
+        plot_dir: Output directory for the figure.
+        running_in_jupyter: If True, show the plot instead of closing.
+    """
     valid_idx = ~(df1["Hs"].isna() | df2["Hs"].isna())
     hs1 = df1.loc[valid_idx, "Hs"].values
     hs2 = df2.loc[valid_idx, "Hs"].values
@@ -76,7 +87,13 @@ def plot_buoy_comparison(df1, df2, buoy_names, stats_dict, plot_dir, running_in_
 
 
 def plot_wave_power_by_survey(wave_power_df, plot_dir, running_in_jupyter=True):
-    """Plot cumulative wave power as side-by-side bars with max Hs overlays."""
+    """Plot cumulative wave power by survey interval.
+
+    Args:
+        wave_power_df: DataFrame of wave power statistics.
+        plot_dir: Output directory for plots.
+        running_in_jupyter: If True, show figures instead of closing.
+    """
     if wave_power_df.empty:
         print("No wave power data to plot")
         return

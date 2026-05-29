@@ -1,3 +1,5 @@
+"""Statistical comparison helpers for overlapping buoy time series."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -6,9 +8,14 @@ from scipy import stats
 
 
 def compare_buoys_overlapping(buoy_data):
-    """
-    Find overlapping time period and align data for both buoys.
-    Returns aligned DataFrames for analysis.
+    """Align two buoy time series over their overlapping interval.
+
+    Args:
+        buoy_data: Mapping of buoy name to a dict with ``time`` and ``Hs`` arrays.
+
+    Returns:
+        Tuple of ``(df_buoy1, df_buoy2, buoy_names)`` with aligned data. If fewer
+        than two buoys are supplied, returns ``(None, None, None)``.
     """
     if len(buoy_data) < 2:
         print("Need data from at least 2 buoys")
@@ -53,7 +60,17 @@ def compare_buoys_overlapping(buoy_data):
 
 
 def calculate_buoy_statistics(df1, df2, buoy_names):
-    """Calculate comprehensive statistical comparison between buoys."""
+    """Compute correlation, regression, and distribution statistics.
+
+    Args:
+        df1: DataFrame with ``datetime`` and ``Hs`` columns for buoy 1.
+        df2: DataFrame with ``datetime`` and ``Hs`` columns for buoy 2.
+        buoy_names: List of buoy labels in the same order as the inputs.
+
+    Returns:
+        Dictionary of correlation metrics, regression parameters, and summary
+        statistics for each buoy.
+    """
     valid_idx = ~(df1["Hs"].isna() | df2["Hs"].isna())
     hs1_clean = df1.loc[valid_idx, "Hs"].values
     hs2_clean = df2.loc[valid_idx, "Hs"].values
@@ -88,6 +105,7 @@ def calculate_buoy_statistics(df1, df2, buoy_names):
     stats_dict["ks_statistic"] = ks_stat
     stats_dict["ks_pval"] = ks_pval
 
+    # Storm threshold based on Splinter et al. (2014).
     storm_threshold = 2.0
     storm_count_1 = np.sum(hs1_clean > storm_threshold)
     storm_count_2 = np.sum(hs2_clean > storm_threshold)
@@ -100,7 +118,12 @@ def calculate_buoy_statistics(df1, df2, buoy_names):
 
 
 def print_comparison_statistics(stats_dict, buoy_names):
-    """Print formatted statistical comparison."""
+    """Print a formatted summary of buoy comparison statistics.
+
+    Args:
+        stats_dict: Dictionary of statistics from ``calculate_buoy_statistics``.
+        buoy_names: Two-element list of buoy names for labeling.
+    """
     print("\n" + "=" * 70)
     print(f"BUOY COMPARISON STATISTICS: {buoy_names[0]} vs {buoy_names[1]}")
     print("=" * 70)
