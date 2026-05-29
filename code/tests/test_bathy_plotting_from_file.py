@@ -1,3 +1,5 @@
+"""Tests for plotting bathymetry outputs from saved files."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +15,7 @@ matplotlib.use("Agg")
 
 
 def _sample_bathy() -> BathyGrid:
+    """Build a small deterministic bathy grid for plotting tests."""
     x_1d = np.array([1000.0, 1020.0, 1040.0], dtype=float)
     y_1d = np.array([2000.0, 2020.0], dtype=float)
     x_grid, y_grid = np.meshgrid(x_1d, y_1d)
@@ -29,12 +32,14 @@ def _sample_bathy() -> BathyGrid:
 
 
 def _datenum_to_year_month(datenum_value: float) -> tuple[int, int]:
+    """Convert MATLAB datenum to year and month."""
     dt = datetime.fromordinal(int(datenum_value)) + timedelta(days=datenum_value % 1) - timedelta(days=366)
     return dt.year, dt.month
 
 
 @pytest.mark.parametrize("fmt", ["mat", "nc"])
 def test_plot_bathy_formatter_outputs_from_file_path(tmp_path: Path, capsys: pytest.CaptureFixture[str], fmt: str) -> None:
+    """Ensure plotting from a saved file path writes expected figures."""
     bathy = _sample_bathy()
     plot_dir = tmp_path / "plots"
 

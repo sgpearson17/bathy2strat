@@ -1,3 +1,5 @@
+"""Tests for bathy grid serialization and loading helpers."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,6 +20,7 @@ from bathy_formatter import (
 
 
 def _sample_bathy() -> BathyGrid:
+    """Build a small deterministic bathy grid for round-trip tests."""
     x_1d = np.array([1000.0, 1020.0, 1040.0], dtype=float)
     y_1d = np.array([2000.0, 2020.0], dtype=float)
     x_grid, y_grid = np.meshgrid(x_1d, y_1d)
@@ -34,6 +37,7 @@ def _sample_bathy() -> BathyGrid:
 
 
 def _assert_bathy_equal(expected: BathyGrid, actual: BathyGrid) -> None:
+    """Assert that two BathyGrid instances match in content."""
     assert actual.location == expected.location
     np.testing.assert_allclose(actual.t, expected.t)
     np.testing.assert_allclose(actual.x, expected.x)
@@ -42,6 +46,7 @@ def _assert_bathy_equal(expected: BathyGrid, actual: BathyGrid) -> None:
 
 
 def test_mat_roundtrip_loaders(tmp_path: Path) -> None:
+    """Save and reload MAT data using both specific and generic loaders."""
     bathy = _sample_bathy()
     mat_path = tmp_path / "bathy_test.mat"
 
@@ -55,6 +60,7 @@ def test_mat_roundtrip_loaders(tmp_path: Path) -> None:
 
 
 def test_netcdf_roundtrip_loaders(tmp_path: Path) -> None:
+    """Save and reload netCDF data using both specific and generic loaders."""
     bathy = _sample_bathy()
     nc_path = tmp_path / "bathy_test.nc"
 
@@ -68,6 +74,7 @@ def test_netcdf_roundtrip_loaders(tmp_path: Path) -> None:
 
 
 def test_load_for_analysis_accepts_grid_result_and_path(tmp_path: Path) -> None:
+    """Ensure load_for_analysis accepts grid, process result, and file path."""
     bathy = _sample_bathy()
     nc_path = tmp_path / "bathy_test.nc"
     save_bathy_grid_netcdf(bathy, nc_path)
@@ -96,6 +103,7 @@ def test_load_for_analysis_accepts_grid_result_and_path(tmp_path: Path) -> None:
 
 
 def test_load_bathy_grid_rejects_unsupported_extension(tmp_path: Path) -> None:
+    """Raise a ValueError for unsupported bathy file extensions."""
     txt_path = tmp_path / "not_supported.txt"
     txt_path.write_text("placeholder", encoding="utf-8")
 

@@ -1,3 +1,5 @@
+"""Tests for stratigraphy core computations and plotting."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,6 +16,7 @@ from bathymetry_analysis.stratigraphy import (
 
 
 def _toy_cube() -> BathyCube:
+    """Build a small bathy cube for synthetic stratigraphy tests."""
     x_axis = np.array([1000.0, 1020.0, 1040.0], dtype=float)
     y_axis = np.array([2000.0, 2020.0], dtype=float)
     x, y = np.meshgrid(x_axis, y_axis)
@@ -30,6 +33,7 @@ def _toy_cube() -> BathyCube:
 
 
 def test_compute_stratigraphy_shapes_and_finiteness() -> None:
+    """Validate output shapes and finite metrics for stratigraphy run."""
     cube = _toy_cube()
     cfg = StratigraphyConfig(initial_index=0, dx=20.0)
 
@@ -50,6 +54,7 @@ def test_compute_stratigraphy_shapes_and_finiteness() -> None:
 
 
 def test_compute_stratigraphy_handles_persistent_nan_cells() -> None:
+    """Ensure NaN cells propagate across all surveys."""
     cube = _toy_cube()
     cube.z[0, 0, 1] = np.nan
 
@@ -60,6 +65,7 @@ def test_compute_stratigraphy_handles_persistent_nan_cells() -> None:
 
 
 def test_plot_cross_sections_writes_visible_png(tmp_path: Path) -> None:
+    """Write at least one non-empty cross-section PNG."""
     cube = _toy_cube()
     result = compute_stratigraphy(cube, StratigraphyConfig(initial_index=0, dx=20.0))
     transect = Transect(name="T1", x=np.array([1000.0, 1040.0], dtype=float), y=np.array([2000.0, 2020.0], dtype=float))

@@ -1,3 +1,5 @@
+"""Benchmark script for bathy formatter regridding performance."""
+
 from __future__ import annotations
 
 from time import perf_counter
@@ -10,7 +12,14 @@ import numpy as np
 
 
 def make_synthetic_surveys(n_surveys: int = 5):
-    """Create a small, deterministic synthetic dataset for benchmarking."""
+    """Create a deterministic synthetic dataset for benchmarking.
+
+    Args:
+        n_surveys: Number of synthetic surveys to generate.
+
+    Returns:
+        List of :class:`bathy_formatter.RawSurvey` instances.
+    """
     from bathy_formatter import RawSurvey, _matlab_datenum
 
     x_vals = np.arange(0.0, 200.0, 20.0)
@@ -38,6 +47,11 @@ def make_synthetic_surveys(n_surveys: int = 5):
 
 
 def run_benchmark(run_real: bool) -> None:
+    """Run synthetic and optional real-data benchmarks.
+
+    Args:
+        run_real: If True, include the notebook-sized dataset benchmark.
+    """
     code_dir = Path(__file__).resolve().parents[1]
     if str(code_dir) not in sys.path:
         sys.path.insert(0, str(code_dir))
@@ -45,6 +59,7 @@ def run_benchmark(run_real: bool) -> None:
     from bathy_formatter import compute_domain_extents, load_raw_surveys, regrid_surveys
 
     def _bench_case(label: str, surveys: list, dx: float) -> None:
+        """Time a single regridding scenario and print summary stats."""
         _, _, x_min, y_min = compute_domain_extents(surveys)
 
         start = perf_counter()

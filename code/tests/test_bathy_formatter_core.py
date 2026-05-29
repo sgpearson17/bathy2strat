@@ -1,3 +1,5 @@
+"""Tests for bathy formatter core logic."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,7 +27,7 @@ def _make_raw_survey(
     y_vals: np.ndarray,
     z_vals: np.ndarray,
 ) -> RawSurvey:
-    # Synthetic survey builder for small, deterministic grids.
+    """Create a synthetic RawSurvey for deterministic tests."""
     x_raw, y_raw = np.meshgrid(x_vals, y_vals)
     return RawSurvey(
         location=location,
@@ -40,7 +42,7 @@ def _make_raw_survey(
 
 
 def _write_nc(path: Path, x_vals: np.ndarray, y_vals: np.ndarray, z_vals: np.ndarray) -> None:
-    # Minimal NetCDF with x/y/z variables to exercise loader paths.
+    """Write a minimal NetCDF file with x/y/z variables."""
     with Dataset(path, "w", format="NETCDF4") as nc:
         nc.createDimension("x", len(x_vals))
         nc.createDimension("y", len(y_vals))
@@ -53,14 +55,14 @@ def _write_nc(path: Path, x_vals: np.ndarray, y_vals: np.ndarray, z_vals: np.nda
 
 
 def test_datenum_roundtrip_simple_date() -> None:
-    # Date conversion should preserve year/month/day for whole-day datenums.
+    """Date conversion should preserve year/month/day for whole-day datenums."""
     dn = _matlab_datenum(2020, 5, 15)
     y, m, d = _datenum_to_date(dn)
     assert (y, m, d) == (2020, 5, 15)
 
 
 def test_compute_domain_extents_ignores_nans() -> None:
-    # Overlap extents should be based on valid data, not NaNs.
+    """Compute overlap extents using only valid data."""
     x_vals = np.array([0.0, 1000.0, 2000.0], dtype=float)
     y_vals = np.array([0.0, 1000.0], dtype=float)
     z = np.array([[np.nan, -1.0, -2.0], [np.nan, -1.0, -2.0]], dtype=float)
@@ -78,7 +80,7 @@ def test_compute_domain_extents_ignores_nans() -> None:
 
 
 def test_regrid_surveys_returns_overlap_mask() -> None:
-    # Regridding should return the overlap mask and use it to NaN-out invalid cells.
+    """Return a valid overlap mask and apply it to NaN-out invalid cells."""
     x_vals = np.arange(0.0, 80.0, 20.0)
     y_vals = np.arange(0.0, 80.0, 20.0)
     x_raw, y_raw = np.meshgrid(x_vals, y_vals)
@@ -105,7 +107,7 @@ def test_regrid_surveys_returns_overlap_mask() -> None:
 
 
 def test_process_bathy_formatter_marks_dropped_dates(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # Dropped surveys should be flagged in printed date list and excluded from processing.
+    """Flag dropped surveys in output and exclude them from processing."""
     nc_dir = tmp_path / "nc"
     out_dir = tmp_path / "out"
     nc_dir.mkdir()
@@ -135,7 +137,7 @@ def test_process_bathy_formatter_marks_dropped_dates(tmp_path: Path, capsys: pyt
 
 
 def test_compute_minimum_overlap_mask_nonempty() -> None:
-    # Overlap mask for a single valid survey should be non-empty.
+    """Return a non-empty overlap mask for a single valid survey."""
     x_vals = np.arange(0.0, 60.0, 20.0)
     y_vals = np.arange(0.0, 60.0, 20.0)
     x_raw, y_raw = np.meshgrid(x_vals, y_vals)
