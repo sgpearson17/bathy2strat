@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import Colormap
+from matplotlib.font_manager import FontProperties
 from pyproj import CRS, Transformer
 from scipy.interpolate import RegularGridInterpolator
 from scipy.io import loadmat
@@ -21,6 +22,20 @@ from .bathy import BathyGrid, load_bathy_grid
 MHW = 0.358
 MSL = -0.112
 MLW = -0.590
+
+
+def _get_plot_font() -> FontProperties:
+    return FontProperties(family="Arial", weight="bold", style="italic")
+
+
+def _apply_axes_font(ax, font: FontProperties) -> None:
+    ax.title.set_fontproperties(font)
+    ax.xaxis.label.set_fontproperties(font)
+    ax.yaxis.label.set_fontproperties(font)
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontproperties(font)
+    for text in ax.texts:
+        text.set_fontproperties(font)
 
 
 @dataclass
@@ -211,6 +226,7 @@ def plot_stratigraphy_stack(
     nt = z_stack.shape[0]
     colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
     dx = float(x_m[1] - x_m[0]) if x_m.size > 1 else 1.0
+    font = _get_plot_font()
 
     fig = plt.figure(figsize=(14.5, 7.4))
     gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 0.7], hspace=0.45, wspace=0.25)
@@ -220,16 +236,16 @@ def plot_stratigraphy_stack(
     ax = axes_top[0]
     for tt in range(nt):
         ax.plot(x_m, z_stack[tt, :], color=colors[tt], linewidth=0.9)
-    ax.set_title("Raw surfaces")
-    ax.set_xlabel("Distance [m]")
-    ax.set_ylabel("Elevation [m]")
+    ax.set_title("Raw surfaces", fontproperties=font)
+    ax.set_xlabel("Distance [m]", fontproperties=font)
+    ax.set_ylabel("Elevation [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
     ax = axes_top[1]
     for tt in range(nt):
         ax.plot(x_m, deposit_elev[tt, :], color=colors[tt], linewidth=0.9)
-    ax.set_title("After erosion rule")
-    ax.set_xlabel("Distance [m]")
+    ax.set_title("After erosion rule", fontproperties=font)
+    ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
     ax = axes_top[2]
@@ -237,18 +253,18 @@ def plot_stratigraphy_stack(
     max_elev = np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev)])
     base = min_elev - 0.01 * abs(min_elev)
     cumulative = base + np.zeros_like(x_m)
-    ax.fill_between(x_m, base, deposit_elev[0, :], color=colors[0], alpha=0.75)
+    ax.fill_between(x_m, base, deposit_elev[0, :], color=colors[0], alpha=1.0)
     cumulative = deposit_elev[0, :]
     for tt in range(1, nt):
         layer = np.maximum(0.0, deposit_elev[tt, :] - deposit_elev[tt - 1, :])
         upper = cumulative + layer
-        ax.fill_between(x_m, cumulative, upper, color=colors[tt], alpha=0.75)
+        ax.fill_between(x_m, cumulative, upper, color=colors[tt], alpha=1.0)
         cumulative = upper
     for tt in range(nt):
         ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
-    ax.set_title("Stacked stratigraphy")
-    ax.set_xlabel("Distance [m]")
+    ax.set_title("Stacked stratigraphy", fontproperties=font)
+    ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
     y_min = base
@@ -282,28 +298,149 @@ def plot_stratigraphy_stack(
         else:
             y_norm = y / denom
         axes_bottom[1].plot(time_axis, y_norm, linewidth=1.2, color=colors[k])
-    axes_bottom[0].set_title("Volume preserved (absolute)")
-    axes_bottom[0].set_xlabel(time_label)
-    axes_bottom[0].set_ylabel("Volume (unit width)")
+    axes_bottom[0].set_title("Volume preserved (absolute)", fontproperties=font)
+    axes_bottom[0].set_xlabel(time_label, fontproperties=font)
+    axes_bottom[0].set_ylabel("Volume (unit width)", fontproperties=font)
     axes_bottom[0].grid(True, alpha=0.3)
-    axes_bottom[1].set_title("Volume preserved (normalized)")
-    axes_bottom[1].set_xlabel(time_label)
-    axes_bottom[1].set_ylabel("Fraction of initial")
+    axes_bottom[1].set_title("Volume preserved (normalized)", fontproperties=font)
+    axes_bottom[1].set_xlabel(time_label, fontproperties=font)
+    axes_bottom[1].set_ylabel("Fraction of initial", fontproperties=font)
     axes_bottom[1].grid(True, alpha=0.3)
 
     denom0 = remaining[0, 0] if np.isfinite(remaining[0, 0]) and remaining[0, 0] != 0 else np.nan
     ratio = np.clip(remaining[:, 0] / denom0, 0.0, 1.0)
     axes_bottom[2].plot(time_axis, ratio, color="k", linewidth=1.4)
-    axes_bottom[2].set_title("Theseus ratio (t0 preserved)")
-    axes_bottom[2].set_xlabel(time_label)
-    axes_bottom[2].set_ylabel("Fraction of initial")
+    axes_bottom[2].set_title("Theseus ratio (t0 preserved)", fontproperties=font)
+    axes_bottom[2].set_xlabel(time_label, fontproperties=font)
+    axes_bottom[2].set_ylabel("Fraction of initial", fontproperties=font)
     ratio_min = np.nanmin(ratio)
     if np.isfinite(ratio_min):
         axes_bottom[2].set_ylim(ratio_min, 1.0)
     else:
         axes_bottom[2].set_ylim(0.0, 1.0)
+    time_max = np.nanmax(time_axis)
+    if np.isfinite(time_max):
+        if start_year_at_zero:
+            axes_bottom[2].set_xlim(0.0, time_max)
+        else:
+            time_min = np.nanmin(time_axis)
+            if np.isfinite(time_min):
+                axes_bottom[2].set_xlim(time_min, time_max)
     axes_bottom[2].grid(True, alpha=0.3)
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for ax in axes_top + axes_bottom:
+        _apply_axes_font(ax, font)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+
+
+def plot_stacked_stratigraphy_section(
+    cube: BathyCube,
+    out_path: Path,
+    title: str,
+    plot_xlim: tuple[float, float] | None = None,
+    plot_ylim: tuple[float, float] | None = None,
+    x_ticks: np.ndarray | None = None,
+    mhw: float | None = None,
+    mlw: float | None = None,
+    highlight_date: str | np.datetime64 | None = None,
+    max_transect_length: float | None = None,
+    max_depth_range: float | None = None,
+    max_fig_width: float = 7.0,
+    max_fig_height: float = 2.5,
+    scale_factor: float = 2.0,
+) -> None:
+    """Plot a standalone stacked stratigraphy section with a fixed title.
+
+    :param cube: 1D transect cube.
+    :param out_path: Output image path.
+    :param title: Plot title.
+    :param plot_xlim: Optional x-axis limits in meters.
+    :param plot_ylim: Optional y-axis limits in meters.
+    :param x_ticks: Optional x-axis tick positions in meters.
+    :param mhw: Optional mean high water elevation.
+    :param mlw: Optional mean low water elevation.
+    :param highlight_date: Optional date string or datetime64 to highlight a deposit.
+    :param max_transect_length: Max transect length for scaling (meters).
+    :param max_depth_range: Max depth range for scaling (meters).
+    :param max_fig_width: Max figure width for scaling (inches).
+    :param max_fig_height: Max figure height for scaling (inches).
+    :param scale_factor: Multiplier for scaled figure size.
+    """
+    x_m = cube.x[0, :]
+    z_stack = cube.z[0, :, :].T
+    deposit_elev = compute_deposit_elev_1d(z_stack)
+    nt = z_stack.shape[0]
+    colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
+    font = _get_plot_font()
+
+    min_elev = np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev)])
+    max_elev = np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev)])
+    base = min_elev - 0.01 * abs(min_elev)
+
+    highlight_layer = None
+    if highlight_date is not None and cube.t is not None and len(cube.t) > 0:
+        t_dt = datenum_to_datetime64(cube.t)
+        highlight_dt = np.datetime64(highlight_date)
+        idx = np.searchsorted(t_dt, highlight_dt, side="left")
+        if idx >= len(t_dt):
+            idx = len(t_dt) - 1
+        if idx > 0:
+            highlight_layer = int(idx)
+
+    x_range = float(np.nanmax(x_m) - np.nanmin(x_m)) if len(x_m) else 0.0
+    y_range = float(max_elev - min_elev) if np.isfinite(max_elev) and np.isfinite(min_elev) else 0.0
+    if max_transect_length and max_depth_range and max_transect_length > 0 and max_depth_range > 0:
+        fig_width = (x_range / max_transect_length) * max_fig_width * scale_factor
+        fig_height = (y_range / max_depth_range) * max_fig_height * scale_factor
+        fig_width = max(fig_width, 3.0)
+        fig_height = max(fig_height, 2.0)
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    else:
+        fig, ax = plt.subplots(figsize=(14.0, 4.0))
+
+    mhw_val = MHW if mhw is None else mhw
+    mlw_val = MLW if mlw is None else mlw
+    ax.axhline(mhw_val, linestyle="--", color="k", linewidth=0.6, zorder=0)
+    ax.axhline(mlw_val, linestyle="--", color="k", linewidth=0.6, zorder=0)
+    cumulative = base + np.zeros_like(x_m)
+    ax.fill_between(x_m, base, deposit_elev[0, :], color=colors[0], alpha=1.0)
+    cumulative = deposit_elev[0, :]
+    for tt in range(1, nt):
+        layer = np.maximum(0.0, deposit_elev[tt, :] - deposit_elev[tt - 1, :])
+        upper = cumulative + layer
+        layer_color = "red" if highlight_layer == tt else colors[tt]
+        ax.fill_between(x_m, cumulative, upper, color=layer_color, alpha=1.0, zorder=1)
+        cumulative = upper
+    for tt in range(nt):
+        ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
+    ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
+
+    ax.set_title(title, fontproperties=font)
+    ax.set_xlabel("Distance [m]", fontproperties=font)
+    ax.set_ylabel("Elevation [m]", fontproperties=font)
+    ax.grid(True, alpha=0.3)
+
+    y_range = (plot_ylim[1] - plot_ylim[0]) if plot_ylim is not None else (max_elev - min_elev)
+    offset = 0.01 * y_range if np.isfinite(y_range) and y_range > 0 else 0.15
+    x_text = x_m[0] if len(x_m) else 0.0
+    ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
+    ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
+
+    if plot_xlim is not None:
+        ax.set_xlim(plot_xlim)
+    else:
+        ax.set_xlim(0.0, float(x_m[-1]) if len(x_m) else 0.0)
+    if plot_ylim is not None:
+        ax.set_ylim(plot_ylim)
+    if x_ticks is not None:
+        ax.set_xticks(x_ticks)
+    _apply_axes_font(ax, font)
+
+    out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -787,6 +924,33 @@ def _interp_surface_along_transect(
     return interp(pts)
 
 
+def extract_transect_cube(
+    bathy: BathyCube,
+    transect: Transect,
+    n_points: int = 400,
+    name: str | None = None,
+) -> BathyCube:
+    """Sample a 3D bathy cube along a transect into a 1D cube.
+
+    :param bathy: Source bathymetry cube.
+    :param transect: Transect polyline to sample.
+    :param n_points: Number of samples along the transect.
+    :param name: Optional name for the output cube.
+    :returns: 1D BathyCube with shape (1, n_points, nt).
+    """
+    x_axis, y_axis = _derive_xy_axes(bathy.x, bathy.y)
+    x_q, y_q, s_q = _resample_polyline(transect.x, transect.y, n_points=n_points)
+    z_transect = _interp_stack_along_transect(x_axis, y_axis, bathy.z, x_q, y_q)
+
+    x_1d = np.asarray(s_q, dtype=float)
+    x_2d = x_1d[None, :]
+    y_2d = np.zeros_like(x_2d)
+    z_3d = z_transect.T[None, :, :]
+
+    location = name or f"{bathy.location}_{transect.name}_slice"
+    return BathyCube(location=location, t=bathy.t, x=x_2d, y=y_2d, z=z_3d)
+
+
 def _default_cmap(n: int) -> Colormap:
     """Return a discrete matplotlib colormap with at least two bins.
 
@@ -810,6 +974,7 @@ def plot_transect_location_map(
     :param config: Plotting configuration.
     """
     fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
+    font = _get_plot_font()
     x_km = bathy.x / 1000.0
     y_km = bathy.y / 1000.0
 
@@ -834,18 +999,33 @@ def plot_transect_location_map(
                 ax.scatter([xq_km[i]], [yq_km[i]], s=config.mid_dot_size, c="w", edgecolors="k", zorder=3)
                 prev_bin = cur_bin
 
-        ax.text(xq_km[0] + 0.03, yq_km[0] - 0.03, tr.name, fontsize=10, fontweight="bold")
-        ax.text(xq_km[-1] - 0.08, yq_km[-1] + 0.03, f"{tr.name}'", fontsize=10, fontweight="bold")
+        ax.text(
+            xq_km[0] + 0.03,
+            yq_km[0] - 0.03,
+            tr.name,
+            fontsize=10,
+            fontweight="bold",
+            fontproperties=font,
+        )
+        ax.text(
+            xq_km[-1] - 0.08,
+            yq_km[-1] + 0.03,
+            f"{tr.name}'",
+            fontsize=10,
+            fontweight="bold",
+            fontproperties=font,
+        )
 
     cb = fig.colorbar(cont, ax=ax)
-    cb.set_label("Elevation [m NAVD88]")
+    cb.set_label("Elevation [m NAVD88]", fontproperties=font)
 
     survey_year = pd.Timestamp(datenum_to_datetime64(np.asarray([bathy.t[-1]]))[0]).year
-    ax.set_title(f"Transect Locations ({survey_year} Bathymetry)")
-    ax.set_xlabel("Easting [km]")
-    ax.set_ylabel("Northing [km]")
+    ax.set_title(f"Transect Locations ({survey_year} Bathymetry)", fontproperties=font)
+    ax.set_xlabel("Easting [km]", fontproperties=font)
+    ax.set_ylabel("Northing [km]", fontproperties=font)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
+    _apply_axes_font(ax, font)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -872,6 +1052,7 @@ def plot_cross_sections(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cmap = _default_cmap(result.deposit_thk_full.shape[2])
+    font = _get_plot_font()
     colors = cmap(np.linspace(0, 1, max(result.deposit_thk_full.shape[2], 2)))
 
     for tr in transects:
@@ -900,13 +1081,14 @@ def plot_cross_sections(
 
         ax.axhline(MLW, linestyle="--", color=(0.1, 0.2, 0.5), linewidth=0.6)
         ax.axhline(MHW, linestyle="--", color=(0.1, 0.2, 0.5), linewidth=0.6)
-        ax.text(dq_km[0] + 0.02, MHW + 0.3, "MHW", color=(0.1, 0.2, 0.5), fontsize=9)
-        ax.text(dq_km[0] + 0.02, MLW + 0.3, "MLW", color=(0.1, 0.2, 0.5), fontsize=9)
+        ax.text(dq_km[0] + 0.02, MHW + 0.3, "MHW", color=(0.1, 0.2, 0.5), fontsize=9, fontproperties=font)
+        ax.text(dq_km[0] + 0.02, MLW + 0.3, "MLW", color=(0.1, 0.2, 0.5), fontsize=9, fontproperties=font)
 
-        ax.set_xlabel("Distance [km]")
-        ax.set_ylabel("Elevation [m NAVD88]")
+        ax.set_xlabel("Distance [km]", fontproperties=font)
+        ax.set_ylabel("Elevation [m NAVD88]", fontproperties=font)
         ax.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
         ax.set_xlim(0.0, np.nanmax(dq_km))
+        _apply_axes_font(ax, font)
 
         y_min = min(np.nanmin(z_min) - 1.0, np.nanmin(baseline) - 1.0)
         y_max = np.nanmax([np.nanmax(z_now) + 1.0, 3.0])
@@ -927,6 +1109,7 @@ def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None
     t_dt = datenum_to_datetime64(result.t)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
+    font = _get_plot_font()
 
     for tt in range(result.theseus_ratio.shape[0]):
         y = result.theseus_ratio[tt, tt:]
@@ -935,8 +1118,8 @@ def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None
         if np.any(valid):
             ax1.plot(x[valid], y[valid], linewidth=1.0)
 
-    ax1.set_xlabel("Time")
-    ax1.set_ylabel("Theta (Fraction Preserved) [-]")
+    ax1.set_xlabel("Time", fontproperties=font)
+    ax1.set_ylabel("Theta (Fraction Preserved) [-]", fontproperties=font)
     ax1.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
 
     for tt in range(result.theseus_ratio.shape[0]):
@@ -948,9 +1131,11 @@ def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None
 
     ax2.set_xscale("log")
     ax2.set_yscale("log")
-    ax2.set_xlabel("Time")
-    ax2.set_ylabel("Theta (Fraction Preserved) [-]")
+    ax2.set_xlabel("Time", fontproperties=font)
+    ax2.set_ylabel("Theta (Fraction Preserved) [-]", fontproperties=font)
     ax2.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
+    _apply_axes_font(ax1, font)
+    _apply_axes_font(ax2, font)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

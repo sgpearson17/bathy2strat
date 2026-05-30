@@ -212,6 +212,7 @@ def plot_correlation_panels(
     output_dir: Path,
     highlight_dates=None,
     outlier_dates=None,
+    verbose: bool = False,
 ) -> None:
     """Create per-buoy correlation panels for each metric vs x-variable.
 
@@ -297,7 +298,8 @@ def plot_correlation_panels(
                 fig.tight_layout()
                 fig.savefig(out_path, dpi=300, bbox_inches="tight")
                 plt.close(fig)
-                print(f"Saved correlation plot: {out_path}")
+                if verbose:
+                    print(f"Saved correlation plot: {out_path}")
 
 
 def plot_correlation_compilation(
@@ -310,6 +312,7 @@ def plot_correlation_compilation(
     highlight_dates=None,
     outlier_dates=None,
     filename: str | None = None,
+    verbose: bool = False,
 ) -> None:
     """Create a grid of correlations for a single x-variable.
 
@@ -401,7 +404,8 @@ def plot_correlation_compilation(
     comp_path = output_dir / comp_name
     fig.savefig(comp_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved compilation plot: {comp_path}")
+    if verbose:
+        print(f"Saved compilation plot: {comp_path}")
 
 
 def run_morpho_wave_correlations(
@@ -411,6 +415,7 @@ def run_morpho_wave_correlations(
     outlier_dates=None,
     metrics_map: dict[str, str] | None = None,
     x_map: dict[str, str] | None = None,
+    verbose: bool = False,
 ) -> None:
     """Generate correlation plots for morphodynamics vs wave power metrics.
 
@@ -461,6 +466,7 @@ def run_morpho_wave_correlations(
         output_dir,
         highlight_dates=highlight_dates,
         outlier_dates=outlier_dates,
+        verbose=verbose,
     )
     for x_col, x_label in x_map.items():
         plot_correlation_compilation(
@@ -472,6 +478,7 @@ def run_morpho_wave_correlations(
             output_dir,
             highlight_dates=highlight_dates,
             outlier_dates=outlier_dates,
+            verbose=verbose,
         )
     plot_correlation_compilation(
         merged_df,
@@ -483,6 +490,7 @@ def run_morpho_wave_correlations(
         highlight_dates=highlight_dates,
         outlier_dates=outlier_dates,
         filename="correlation_compilation_interval_duration.png",
+        verbose=verbose,
     )
 
     plot_correlation_panels(
@@ -493,6 +501,7 @@ def run_morpho_wave_correlations(
         output_dir,
         highlight_dates=highlight_dates,
         outlier_dates=outlier_dates,
+        verbose=verbose,
     )
     for x_col, x_label in x_vars_rate.items():
         plot_correlation_compilation(
@@ -505,4 +514,5 @@ def run_morpho_wave_correlations(
             highlight_dates=highlight_dates,
             outlier_dates=outlier_dates,
             filename=f"correlation_compilation_rate_{x_col}.png",
+            verbose=verbose,
         )
