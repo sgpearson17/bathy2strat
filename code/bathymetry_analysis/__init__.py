@@ -52,6 +52,9 @@ from .morphodynamic_analysis import (
 from .workflows import (
     run_morpho_wave_correlations,
     run_morphodynamics_vs_wave_power,
+    run_shapefile_transect_plots,
+    run_transect_slice_plots,
+    plot_transect_location_plan,
     startup_check,
 )
 
@@ -99,5 +102,8 @@ __all__ = [
     "save_morphodynamic_csv",
     "run_morpho_wave_correlations",
     "run_morphodynamics_vs_wave_power",
+    "run_shapefile_transect_plots",
+    "run_transect_slice_plots",
+    "plot_transect_location_plan",
     "startup_check",
 ]

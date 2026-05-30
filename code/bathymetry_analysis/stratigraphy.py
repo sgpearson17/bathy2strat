@@ -219,6 +219,7 @@ def plot_stratigraphy_stack(
     plot_xlim: tuple[float, float] | None = None,
     plot_ylim: tuple[float, float] | None = None,
     highlight_date: str | np.datetime64 | None = None,
+    title_prefix: str | None = None,
 ) -> None:
     """Plot stacked stratigraphy plus preservation metrics for a 1D transect cube."""
     x_m = cube.x[0, :]
@@ -248,12 +249,18 @@ def plot_stratigraphy_stack(
     axes_top = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
     axes_bottom = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[1, 2])]
 
+    # Compose subplot titles with optional section names and panel labels.
+    def _title(prefix: str, base: str) -> str:
+        if title_prefix:
+            return f"{prefix} {title_prefix} - {base}"
+        return f"{prefix} {base}"
+
     ax = axes_top[0]
     for tt in range(nt):
         ax.plot(x_m, z_stack[tt, :], color=colors[tt], linewidth=0.9)
     if highlight_layer is not None:
         ax.plot(x_m, z_stack[highlight_layer, :], color="red", linewidth=1.6, zorder=3)
-    ax.set_title("Raw surfaces", fontproperties=font)
+    ax.set_title(_title("(a)", "Raw surfaces"), fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.set_ylabel("Elevation [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
@@ -263,7 +270,7 @@ def plot_stratigraphy_stack(
         ax.plot(x_m, deposit_elev[tt, :], color=colors[tt], linewidth=0.9)
     if highlight_surface is not None:
         ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
-    ax.set_title("After erosion rule", fontproperties=font)
+    ax.set_title(_title("(b)", "After erosion rule"), fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
@@ -285,7 +292,7 @@ def plot_stratigraphy_stack(
     if highlight_surface is not None:
         ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
-    ax.set_title("Stacked stratigraphy", fontproperties=font)
+    ax.set_title(_title("(c)", "Stacked stratigraphy"), fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
@@ -293,6 +300,9 @@ def plot_stratigraphy_stack(
     y_max = max_elev + 0.01 * abs(max_elev)
     for ax in axes_top:
         ax.set_ylim(y_min, y_max)
+
+    y_max_plot = plot_ylim[1] if plot_ylim is not None else y_max
+    show_water_labels = bool(np.isfinite(y_max_plot) and y_max_plot >= MLW)
 
     if scenario == "bruun_slr":
         if plot_xlim is None:
@@ -331,11 +341,11 @@ def plot_stratigraphy_stack(
         else:
             y_norm = y / denom
         axes_bottom[1].plot(time_axis, y_norm, linewidth=2.4, color="red", zorder=3)
-    axes_bottom[0].set_title("Volume preserved (absolute)", fontproperties=font)
+    axes_bottom[0].set_title(_title("(d)", "Volume preserved (absolute)"), fontproperties=font)
     axes_bottom[0].set_xlabel(time_label, fontproperties=font)
     axes_bottom[0].set_ylabel("Volume (unit width)", fontproperties=font)
     axes_bottom[0].grid(True, alpha=0.3)
-    axes_bottom[1].set_title("Volume preserved (normalized)", fontproperties=font)
+    axes_bottom[1].set_title(_title("(e)", "Volume preserved (normalized)"), fontproperties=font)
     axes_bottom[1].set_xlabel(time_label, fontproperties=font)
     axes_bottom[1].set_ylabel("Fraction of initial", fontproperties=font)
     axes_bottom[1].grid(True, alpha=0.3)
@@ -345,7 +355,7 @@ def plot_stratigraphy_stack(
     axes_bottom[2].plot(time_axis, ratio, color="k", linewidth=1.4)
     if highlight_layer is not None and highlight_layer < len(time_axis):
         axes_bottom[2].axvline(time_axis[highlight_layer], color="red", linewidth=1.6, zorder=3)
-    axes_bottom[2].set_title("Theseus ratio (t0 preserved)", fontproperties=font)
+    axes_bottom[2].set_title(_title("(f)", "Theseus ratio (t0 preserved)"), fontproperties=font)
     axes_bottom[2].set_xlabel(time_label, fontproperties=font)
     axes_bottom[2].set_ylabel("Fraction of initial", fontproperties=font)
     ratio_min = np.nanmin(ratio)
@@ -362,6 +372,12 @@ def plot_stratigraphy_stack(
             if np.isfinite(time_min):
                 axes_bottom[2].set_xlim(time_min, time_max)
     axes_bottom[2].grid(True, alpha=0.3)
+
+    if show_water_labels:
+        x_text = x_m[0] if len(x_m) else 0.0
+        offset = 0.01 * (y_max - y_min) if np.isfinite(y_max - y_min) and y_max > y_min else 0.15
+        axes_top[0].text(x_text, MHW + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
+        axes_top[0].text(x_text, MLW + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for ax in axes_top + axes_bottom:
@@ -473,8 +489,10 @@ def plot_stacked_stratigraphy_section(
     y_range = (plot_ylim[1] - plot_ylim[0]) if plot_ylim is not None else (max_elev - min_elev)
     offset = 0.01 * y_range if np.isfinite(y_range) and y_range > 0 else 0.15
     x_text = x_m[0] if len(x_m) else 0.0
-    ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
-    ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
+    y_max = plot_ylim[1] if plot_ylim is not None else max_elev
+    if np.isfinite(y_max) and y_max >= mlw_val:
+        ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
+        ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
 
     if plot_xlim is not None:
         ax.set_xlim(plot_xlim)
@@ -804,6 +822,7 @@ def load_transects_from_shapefiles(
     target_crs: str,
     source_crs: str | None = None,
     prompt_if_missing_crs: bool = True,
+    prefer_xy_columns: bool = False,
 ) -> list[Transect]:
     """Load and reproject transects from shapefiles in a directory.
 
@@ -811,6 +830,7 @@ def load_transects_from_shapefiles(
     :param target_crs: Target CRS for reprojection.
     :param source_crs: Optional source CRS override.
     :param prompt_if_missing_crs: Prompt for CRS if shapefile lacks metadata.
+    :param prefer_xy_columns: Prefer attribute columns (e.g., Lon/Lat) over geometry.
     :returns: List of :class:`Transect` objects.
     :raises FileNotFoundError: If no shapefiles are found.
     :raises ValueError: If transect coordinates cannot be derived.
@@ -831,9 +851,14 @@ def load_transects_from_shapefiles(
     for shp in shp_paths:
         gdf = gpd.read_file(shp)
 
-        xy = _extract_line_xy(gdf)
-        if xy is None:
+        if prefer_xy_columns:
             xy = _extract_xy_columns(gdf)
+            if xy is None:
+                xy = _extract_line_xy(gdf)
+        else:
+            xy = _extract_line_xy(gdf)
+            if xy is None:
+                xy = _extract_xy_columns(gdf)
         if xy is None:
             raise ValueError(
                 f"Could not derive transect coordinates from {shp.name}. "

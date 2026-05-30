@@ -10,10 +10,79 @@ import sys
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.path import Path as MplPath
 import numpy as np
 import pandas as pd
+from scipy.interpolate import splprep, splev
 
 from utils.date_utils import interval_highlight_mask
+from bathy_formatter import get_named_colormap
+from .bathy import load_clrmap_file
+from .stratigraphy import (
+    StratigraphyConfig,
+    Transect,
+    compute_stratigraphy,
+    extract_transect_cube,
+    load_bathy_cube,
+    load_transects_from_shapefiles,
+    plot_stacked_stratigraphy_section,
+    plot_stratigraphy_stack,
+)
+
+
+def _transect_hits_domain(bathy_cube, transect: Transect) -> bool:
+    """Return True if any transect point intersects the bathymetry domain hull."""
+    z_last = bathy_cube.z[:, :, -1]
+    mask = np.isfinite(z_last)
+    if not np.any(mask):
+        return False
+
+    x_valid = bathy_cube.x[mask].astype(float)
+    y_valid = bathy_cube.y[mask].astype(float)
+    pts = np.column_stack([x_valid, y_valid])
+    if pts.shape[0] < 3:
+        return False
+
+    from scipy.spatial import ConvexHull
+
+    hull = ConvexHull(pts)
+    hull_pts = pts[hull.vertices]
+    hull_path = MplPath(hull_pts)
+    transect_pts = np.column_stack([transect.x, transect.y])
+    return bool(np.any(hull_path.contains_points(transect_pts)))
+
+
+def _unique_xy(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Remove duplicate xy rows while preserving order."""
+    coords = np.column_stack([x, y])
+    unique_coords = np.unique(coords, axis=0)
+    if unique_coords.shape[0] != coords.shape[0]:
+        # Stable unique to preserve order.
+        _, idx = np.unique(coords, axis=0, return_index=True)
+        coords = coords[np.sort(idx)]
+    return coords[:, 0], coords[:, 1]
+
+
+def _smooth_transect_xy(
+    x: np.ndarray,
+    y: np.ndarray,
+    n_points: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a spline through a polyline and resample it with n_points."""
+    if n_points < 2:
+        raise ValueError("n_points must be >= 2 for spline resampling")
+    if x.size < 4:
+        raise ValueError("need at least 4 points for spline smoothing")
+    pts = np.column_stack([x, y])
+    seg_len = np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1]))
+    s = np.concatenate([[0.0], np.cumsum(seg_len)])
+    if s[-1] == 0.0:
+        return x, y
+    t = s / s[-1]
+    tck, _ = splprep([x, y], u=t, s=0.0)
+    t_new = np.linspace(0.0, 1.0, n_points)
+    x_new, y_new = splev(t_new, tck)
+    return np.asarray(x_new), np.asarray(y_new)
 
 DEFAULT_REQUIRED_MODULES = {
     "numpy": "numpy",
@@ -39,6 +108,564 @@ DEFAULT_X_VARS = {
     "cum_wave_power_below_MWh_m": "Wave power (Hs < 2.0 m) [MWh/m]",
     "period_days": "Interval duration [days]",
 }
+
+
+def _label_for_index(index: int) -> str:
+    """Convert a 0-based index into A, B, ..., Z, AA, BB, ... labels."""
+    repeat = index // 26 + 1
+    letter = chr(ord("A") + (index % 26))
+    return letter * repeat
+
+
+def run_transect_slice_plots(
+    bathy_nc_path: str | Path,
+    output_root: str | Path,
+    transect_rows_km: np.ndarray,
+    tick_spacing_m: float = 100.0,
+    mhw: float = 0.358,
+    mlw: float = -0.590,
+    highlight_date: str | np.datetime64 | None = None,
+    n_points: int = 400,
+    initial_index: int = 0,
+    dx: float = 20.0,
+    target_crs: str = "EPSG:32618",
+    max_fig_width_cm: float = 20.0,
+    max_fig_height_cm: float = 5.0,
+) -> dict[str, object]:
+    """Plot 6-panel stratigraphy summaries for a list of transect slices.
+
+    Args:
+        bathy_nc_path: Path to the bathymetry cube netCDF file.
+        output_root: Output root directory for plots.
+        transect_rows_km: Array of transect endpoints in kilometers.
+        tick_spacing_m: Tick spacing along transects (meters).
+        mhw: Mean high water elevation.
+        mlw: Mean low water elevation.
+        highlight_date: Optional date string or datetime64 to highlight a deposit.
+        n_points: Number of points used for each transect slice.
+        initial_index: Initial stratigraphy index.
+        dx: Grid spacing in meters.
+        target_crs: CRS string for plot metadata.
+        max_fig_width_cm: Maximum plot width for scaled sections (cm).
+        max_fig_height_cm: Maximum plot height for scaled sections (cm).
+
+    Returns:
+        Dict containing the bathy cube, labels, and output directory for reuse.
+    """
+    labels = [_label_for_index(i) for i in range(len(transect_rows_km))]
+    output_root = Path(output_root)
+    bathy_cube = load_bathy_cube(bathy_nc_path)
+    slice_cfg = StratigraphyConfig(initial_index=initial_index, dx=dx, target_crs=target_crs)
+    slice_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
+    slice_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    z_min = np.inf
+    z_max = -np.inf
+    max_len_m = 0.0
+
+    for (x1, y1, x2, y2), label in zip(transect_rows_km, labels):
+        coords_m = np.array([[x1, y1], [x2, y2]], dtype=float) * 1000.0
+        length_m = float(np.hypot(coords_m[1, 0] - coords_m[0, 0], coords_m[1, 1] - coords_m[0, 1]))
+        max_len_m = max(max_len_m, length_m)
+        transect = Transect(name=f"{label}", x=coords_m[:, 0], y=coords_m[:, 1])
+
+        slice_cube = extract_transect_cube(bathy_cube, transect, n_points=n_points, name=transect.name)
+        slice_result = compute_stratigraphy(slice_cube, slice_cfg)
+
+        z_min = min(z_min, np.nanmin(slice_cube.z))
+        z_max = max(z_max, np.nanmax(slice_cube.z))
+        entries.append((label, transect, slice_cube, slice_result, length_m))
+
+    plot_ylim = None
+    max_depth_range = None
+    if np.isfinite(z_min) and np.isfinite(z_max) and z_max > z_min:
+        plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
+        max_depth_range = plot_ylim[1] - plot_ylim[0]
+
+    for label, transect, slice_cube, slice_result, length_m in entries:
+        section_title = f"{label}-{label}'"
+        plot_stratigraphy_stack(
+            slice_cube,
+            slice_result,
+            slice_dir / f"strat_overview_section_{transect.name}.png",
+            f"overview_{label}",
+            time_vals=slice_cube.t,
+            title_prefix=section_title,
+        )
+
+        xticks_m = np.arange(0.0, length_m + 1e-6, tick_spacing_m)
+        plot_stacked_stratigraphy_section(
+            slice_cube,
+            slice_dir / f"strat_section_{label}.png",
+            f"Cross-section {label}-{label}'",
+            plot_xlim=None,
+            plot_ylim=plot_ylim,
+            x_ticks=xticks_m,
+            mhw=mhw,
+            mlw=mlw,
+            highlight_date=None,
+            max_transect_length=max_len_m,
+            max_depth_range=max_depth_range,
+            max_fig_width_cm=max_fig_width_cm,
+            max_fig_height_cm=max_fig_height_cm,
+        )
+
+        if highlight_date:
+            highlight_str = highlight_date
+            if not isinstance(highlight_date, str):
+                highlight_str = str(np.datetime64(highlight_date))
+            highlight_tag = highlight_str[:10]
+            slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+            slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+            plot_stratigraphy_stack(
+                slice_cube,
+                slice_result,
+                slice_highlight_dir / f"strat_{transect.name}_highlight_{highlight_tag}.png",
+                f"overview_slice_{label}",
+                time_vals=slice_cube.t,
+                highlight_date=highlight_date,
+                title_prefix=section_title,
+            )
+            plot_stacked_stratigraphy_section(
+                slice_cube,
+                slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                f"Cross-section {label}-{label}'",
+                plot_xlim=None,
+                plot_ylim=plot_ylim,
+                x_ticks=xticks_m,
+                mhw=mhw,
+                mlw=mlw,
+                highlight_date=highlight_date,
+                max_transect_length=max_len_m,
+                max_depth_range=max_depth_range,
+                max_fig_width_cm=max_fig_width_cm,
+                max_fig_height_cm=max_fig_height_cm,
+            )
+
+    return {
+        "bathy_cube": bathy_cube,
+        "labels": labels,
+        "transect_rows_km": transect_rows_km,
+        "output_root": output_root,
+        "slice_dir": slice_dir,
+    }
+
+
+def plot_transect_location_plan(
+    bathy_cube,
+    transect_rows_km: np.ndarray,
+    output_root: str | Path,
+    labels: list[str] | None = None,
+    mlw: float = 0.0,
+    tick_spacing_m: float = 100.0,
+    tick_length_km: float = 0.02,
+    cmap_name: str = "kg2",
+) -> Path:
+    """Plot transect locations on the latest bathymetry surface.
+
+    Args:
+        bathy_cube: BathyCube loaded from the bathymetry stack.
+        transect_rows_km: Array of transect endpoints in kilometers.
+        output_root: Output root directory for plots.
+        labels: Optional list of transect labels.
+        mlw: Mean low water contour in meters.
+        tick_spacing_m: Tick spacing along transects (meters).
+        tick_length_km: Tick length for transect tick marks (km).
+        cmap_name: Colormap name for bathymetry rendering.
+
+    Returns:
+        Path to the saved plan figure.
+    """
+
+    def _plot_transect_ticks(ax, x1, y1, x2, y2, spacing_km, tick_len_km) -> None:
+        """Draw small perpendicular ticks along a transect line."""
+        dx = x2 - x1
+        dy = y2 - y1
+        length = float(np.hypot(dx, dy))
+        if length <= 0.0:
+            return
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        for s in np.arange(0.0, length + 1e-9, spacing_km):
+            cx = x1 + ux * s
+            cy = y1 + uy * s
+            x0 = cx - px * tick_len_km * 0.5
+            x1t = cx + px * tick_len_km * 0.5
+            y0 = cy - py * tick_len_km * 0.5
+            y1t = cy + py * tick_len_km * 0.5
+            ax.plot([x0, x1t], [y0, y1t], color="k", linewidth=0.6, zorder=2)
+
+    labels = labels or [_label_for_index(i) for i in range(len(transect_rows_km))]
+    output_root = Path(output_root)
+
+    x_km = bathy_cube.x / 1000.0
+    y_km = bathy_cube.y / 1000.0
+    z_last = bathy_cube.z[:, :, -1]
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    levels = np.arange(-10.0, 5.01, 0.2)
+    cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
+    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+    ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
+    ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Easting [km]")
+    ax.set_ylabel("Northing [km]")
+    ax.set_title("Transect Locations (Latest Bathymetry)")
+    ax.grid(True, color="0.5", alpha=0.4)
+    ax.set_axisbelow(False)
+
+    cb = fig.colorbar(cf, ax=ax)
+    cb.set_label("Depth [m]")
+
+    tick_spacing_km = tick_spacing_m / 1000.0
+    for (x1, y1, x2, y2), label in zip(transect_rows_km, labels):
+        ax.plot([x1, x2], [y1, y2], "-k", linewidth=1.0)
+        _plot_transect_ticks(ax, x1, y1, x2, y2, tick_spacing_km, tick_length_km)
+        ax.scatter([x1, x2], [y1, y2], s=20, c="w", edgecolors="k", zorder=3)
+        ax.text(x1 - 0.03, y1 + 0.03, label, fontweight="bold", color="k")
+        ax.text(x2 + 0.03, y2 - 0.03, f"{label}'", fontweight="bold", color="k")
+
+    plan_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plan_dir / "transect_location_plan.png"
+    fig.savefig(plan_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+    print(f"Saved transect plan to: {plan_path}")
+    return plan_path
+
+
+def _plot_ticks_along_polyline(
+    ax,
+    x_km: np.ndarray,
+    y_km: np.ndarray,
+    spacing_km: float,
+    tick_len_km: float,
+) -> None:
+    """Draw perpendicular tick marks along a polyline at fixed spacing."""
+    if spacing_km <= 0 or tick_len_km <= 0 or x_km.size < 2:
+        return
+
+    pts = np.column_stack([x_km, y_km])
+    seg_len = np.hypot(np.diff(pts[:, 0]), np.diff(pts[:, 1]))
+    s = np.concatenate([[0.0], np.cumsum(seg_len)])
+    if s[-1] <= 0:
+        return
+
+    for dist in np.arange(0.0, s[-1] + 1e-9, spacing_km):
+        idx = int(np.searchsorted(s, dist, side="right") - 1)
+        idx = min(max(idx, 0), len(seg_len) - 1)
+        if seg_len[idx] <= 0:
+            continue
+        frac = (dist - s[idx]) / seg_len[idx]
+        x0, y0 = pts[idx]
+        x1, y1 = pts[idx + 1]
+        cx = x0 + frac * (x1 - x0)
+        cy = y0 + frac * (y1 - y0)
+        ux = (x1 - x0) / seg_len[idx]
+        uy = (y1 - y0) / seg_len[idx]
+        px, py = -uy, ux
+        tx0 = cx - px * tick_len_km * 0.5
+        ty0 = cy - py * tick_len_km * 0.5
+        tx1 = cx + px * tick_len_km * 0.5
+        ty1 = cy + py * tick_len_km * 0.5
+        ax.plot([tx0, tx1], [ty0, ty1], color="k", linewidth=0.6, zorder=2)
+
+
+def plot_transect_location_plan_from_transects(
+    bathy_cube,
+    transects: list[Transect],
+    output_root: str | Path,
+    labels: list[str] | None = None,
+    mlw: float = 0.0,
+    tick_spacing_m: float = 100.0,
+    tick_length_km: float = 0.02,
+    cmap_name: str = "kg2",
+    map_output_name: str = "transect_location_plan_shapefiles.png",
+) -> Path:
+    """Plot transect polylines on the latest bathymetry surface.
+
+    Args:
+        bathy_cube: BathyCube loaded from the bathymetry stack.
+        transects: List of transects in projected coordinates (meters).
+        output_root: Output root directory for plots.
+        labels: Optional list of transect labels (A, B, C...).
+        mlw: Mean low water contour in meters.
+        tick_spacing_m: Tick spacing along transects (meters).
+        tick_length_km: Tick length for transect tick marks (km).
+        cmap_name: Colormap name for bathymetry rendering.
+        map_output_name: Filename for the saved map.
+
+    Returns:
+        Path to the saved plan figure.
+    """
+    labels = labels or [_label_for_index(i) for i in range(len(transects))]
+    output_root = Path(output_root)
+
+    x_km = bathy_cube.x / 1000.0
+    y_km = bathy_cube.y / 1000.0
+    z_last = bathy_cube.z[:, :, -1]
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    levels = np.arange(-10.0, 5.01, 0.2)
+    cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
+    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+    ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
+    ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Easting [km]")
+    ax.set_ylabel("Northing [km]")
+    ax.set_title("Transect Locations (Latest Bathymetry)")
+    ax.grid(True, color="0.5", alpha=0.4)
+    ax.set_axisbelow(False)
+
+    cb = fig.colorbar(cf, ax=ax)
+    cb.set_label("Depth [m]")
+
+    tick_spacing_km = tick_spacing_m / 1000.0
+    for transect, label in zip(transects, labels):
+        x_line = np.asarray(transect.x, dtype=float) / 1000.0
+        y_line = np.asarray(transect.y, dtype=float) / 1000.0
+        ax.plot(x_line, y_line, "-k", linewidth=1.0)
+        _plot_ticks_along_polyline(ax, x_line, y_line, tick_spacing_km, tick_length_km)
+        ax.scatter([x_line[0], x_line[-1]], [y_line[0], y_line[-1]], s=20, c="w", edgecolors="k", zorder=3)
+        ax.text(x_line[0] - 0.03, y_line[0] + 0.03, label, fontweight="bold", color="k")
+        ax.text(x_line[-1] + 0.03, y_line[-1] - 0.03, f"{label}'", fontweight="bold", color="k")
+
+    map_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    map_path = map_dir / map_output_name
+    fig.savefig(map_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+    print(f"Saved transect plan to: {map_path}")
+    return map_path
+
+
+def run_shapefile_transect_plots(
+    bathy_nc_path: str | Path,
+    output_root: str | Path,
+    shp_dir: str | Path,
+    target_crs: str = "EPSG:32618",
+    source_crs: str | None = None,
+    prompt_if_missing_crs: bool = True,
+    prefer_xy_columns: bool = False,
+    smooth_transects: bool = True,
+    spline_points: int = 1000,
+    distance_mode: str = "curvy",
+    n_points: int = 400,
+    tick_spacing_m: float = 100.0,
+    map_tick_length_km: float = 0.02,
+    mhw: float = 0.358,
+    mlw: float = -0.590,
+    highlight_date: str | np.datetime64 | None = None,
+    initial_index: int = 0,
+    dx: float = 20.0,
+    max_fig_width_cm: float = 20.0,
+    max_fig_height_cm: float = 5.0,
+    map_output_name: str = "transect_location_plan_shapefiles.png",
+) -> dict[str, object]:
+    """Plot stratigraphy sections and a location map for shapefile transects.
+
+    Args:
+        bathy_nc_path: Path to the bathymetry cube netCDF file.
+        output_root: Output root directory for plots.
+        shp_dir: Directory containing transect shapefiles.
+        target_crs: Target CRS for reprojection.
+        source_crs: Optional source CRS override.
+        prompt_if_missing_crs: Prompt if shapefile CRS metadata is missing.
+        prefer_xy_columns: Prefer DBF x/y columns over line geometry.
+        smooth_transects: Whether to spline-smooth shapefile transects.
+        spline_points: Number of spline points used for smoothing.
+        distance_mode: "curvy" for along-transect distances, "straight" for endpoints.
+        n_points: Number of samples along each transect.
+        tick_spacing_m: Tick spacing along transects (meters).
+        map_tick_length_km: Tick length for map ticks (km).
+        mhw: Mean high water elevation.
+        mlw: Mean low water elevation.
+        highlight_date: Optional date string or datetime64 to highlight a deposit.
+        initial_index: Initial stratigraphy index.
+        dx: Grid spacing in meters.
+        max_fig_width_cm: Maximum plot width for scaled sections (cm).
+        max_fig_height_cm: Maximum plot height for scaled sections (cm).
+        map_output_name: Filename for the transect location plan.
+
+    Returns:
+        Dict containing bathy cube, transects, and output paths.
+    """
+    output_root = Path(output_root)
+    bathy_cube = load_bathy_cube(bathy_nc_path)
+    transects = load_transects_from_shapefiles(
+        shp_dir=shp_dir,
+        target_crs=target_crs,
+        source_crs=source_crs,
+        prompt_if_missing_crs=prompt_if_missing_crs,
+        prefer_xy_columns=prefer_xy_columns,
+    )
+
+    slice_cfg = StratigraphyConfig(initial_index=initial_index, dx=dx, target_crs=target_crs)
+    slice_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice" / "shapefiles"
+    slice_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    valid_transects = []
+    skipped_transects = []
+    label_map = {}
+    z_min = np.inf
+    z_max = -np.inf
+    max_len_m = 0.0
+
+    label_index = 0
+    for transect in transects:
+        x_raw, y_raw = _unique_xy(transect.x, transect.y)
+        if x_raw.size < 2:
+            print(f"WARNING: input file {transect.name}.shp has fewer than 2 points and was ignored.")
+            skipped_transects.append(transect.name)
+            continue
+
+        if smooth_transects:
+            try:
+                x_raw, y_raw = _smooth_transect_xy(x_raw, y_raw, spline_points)
+            except ValueError as exc:
+                print(f"WARNING: input file {transect.name}.shp could not be smoothed ({exc}).")
+
+        if distance_mode.lower() == "straight":
+            x_raw = np.array([x_raw[0], x_raw[-1]])
+            y_raw = np.array([y_raw[0], y_raw[-1]])
+
+        transect_use = Transect(name=transect.name, x=x_raw, y=y_raw)
+
+        if not _transect_hits_domain(bathy_cube, transect_use):
+            print(
+                f"WARNING: input file {transect.name}.shp does not intersect the surveyed area and "
+                "was therefore ignored."
+            )
+            skipped_transects.append(transect.name)
+            continue
+
+        coords = np.column_stack([transect_use.x, transect_use.y])
+        seg_len = np.hypot(np.diff(coords[:, 0]), np.diff(coords[:, 1]))
+        length_m = float(np.sum(seg_len))
+        max_len_m = max(max_len_m, length_m)
+
+        label = _label_for_index(label_index)
+        label_index += 1
+        label_map[label] = transect.name
+        transect_label = Transect(name=label, x=transect_use.x, y=transect_use.y)
+
+        slice_cube = extract_transect_cube(
+            bathy_cube, transect_label, n_points=n_points, name=transect_label.name
+        )
+        if not np.isfinite(slice_cube.z).any():
+            print(
+                f"WARNING: input file {transect.name}.shp does not contain valid data within the surveyed "
+                "area and was therefore ignored."
+            )
+            skipped_transects.append(transect.name)
+            continue
+
+        slice_result = compute_stratigraphy(slice_cube, slice_cfg)
+
+        z_min = min(z_min, np.nanmin(slice_cube.z))
+        z_max = max(z_max, np.nanmax(slice_cube.z))
+        entries.append((label, transect_label, slice_cube, slice_result, length_m))
+        valid_transects.append(transect_label)
+
+    plot_ylim = None
+    max_depth_range = None
+    if np.isfinite(z_min) and np.isfinite(z_max) and z_max > z_min:
+        plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
+        max_depth_range = plot_ylim[1] - plot_ylim[0]
+
+    for label, transect, slice_cube, slice_result, length_m in entries:
+        section_title = f"{label}-{label}'"
+        plot_stratigraphy_stack(
+            slice_cube,
+            slice_result,
+            slice_dir / f"strat_overview_section_{label}.png",
+            f"overview_{label}",
+            time_vals=slice_cube.t,
+            title_prefix=section_title,
+        )
+
+        xticks_m = np.arange(0.0, length_m + 1e-6, tick_spacing_m)
+        plot_stacked_stratigraphy_section(
+            slice_cube,
+            slice_dir / f"strat_section_{label}.png",
+            f"Cross-section {section_title}",
+            plot_xlim=None,
+            plot_ylim=plot_ylim,
+            x_ticks=xticks_m,
+            mhw=mhw,
+            mlw=mlw,
+            highlight_date=None,
+            max_transect_length=max_len_m,
+            max_depth_range=max_depth_range,
+            max_fig_width_cm=max_fig_width_cm,
+            max_fig_height_cm=max_fig_height_cm,
+        )
+
+        if highlight_date:
+            highlight_str = highlight_date
+            if not isinstance(highlight_date, str):
+                highlight_str = str(np.datetime64(highlight_date))
+            highlight_tag = highlight_str[:10]
+            slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+            slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+            plot_stratigraphy_stack(
+                slice_cube,
+                slice_result,
+                slice_highlight_dir / f"strat_{label}_highlight_{highlight_tag}.png",
+                f"overview_slice_{label}",
+                time_vals=slice_cube.t,
+                highlight_date=highlight_date,
+                title_prefix=section_title,
+            )
+            plot_stacked_stratigraphy_section(
+                slice_cube,
+                slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                f"Cross-section {section_title}",
+                plot_xlim=None,
+                plot_ylim=plot_ylim,
+                x_ticks=xticks_m,
+                mhw=mhw,
+                mlw=mlw,
+                highlight_date=highlight_date,
+                max_transect_length=max_len_m,
+                max_depth_range=max_depth_range,
+                max_fig_width_cm=max_fig_width_cm,
+                max_fig_height_cm=max_fig_height_cm,
+            )
+
+    if valid_transects:
+        map_path = plot_transect_location_plan_from_transects(
+            bathy_cube,
+            valid_transects,
+            output_root=output_root,
+            labels=[t.name for t in valid_transects],
+            mlw=mlw,
+            tick_spacing_m=tick_spacing_m,
+            tick_length_km=map_tick_length_km,
+            cmap_name="kg2",
+            map_output_name=map_output_name,
+        )
+    else:
+        map_path = output_root / "plots" / "python" / "stratigraphy" / "transect_slice" / map_output_name
+        print("WARNING: no valid transects found for plotting.")
+
+    return {
+        "bathy_cube": bathy_cube,
+        "transects": valid_transects,
+        "skipped_transects": skipped_transects,
+        "output_root": output_root,
+        "slice_dir": slice_dir,
+        "map_path": map_path,
+        "label_map": label_map,
+    }
 
 
 def _ensure_local_imports() -> Path:
