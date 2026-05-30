@@ -218,6 +218,7 @@ def plot_stratigraphy_stack(
     start_year_at_zero: bool = True,
     plot_xlim: tuple[float, float] | None = None,
     plot_ylim: tuple[float, float] | None = None,
+    highlight_date: str | np.datetime64 | None = None,
 ) -> None:
     """Plot stacked stratigraphy plus preservation metrics for a 1D transect cube."""
     x_m = cube.x[0, :]
@@ -228,6 +229,20 @@ def plot_stratigraphy_stack(
     dx = float(x_m[1] - x_m[0]) if x_m.size > 1 else 1.0
     font = _get_plot_font()
 
+    highlight_layer = None
+    highlight_surface = None
+    if highlight_date is not None and cube.t is not None and len(cube.t) > 0:
+        t_dt = datenum_to_datetime64(cube.t)
+        highlight_dt = np.datetime64(highlight_date)
+        idx = np.searchsorted(t_dt, highlight_dt, side="left")
+        if idx >= len(t_dt):
+            idx = len(t_dt) - 1
+        if idx >= 0:
+            highlight_layer = int(idx)
+            intact = np.isfinite(z_stack[highlight_layer, :]) & np.isfinite(deposit_elev[highlight_layer, :])
+            intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
+            highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
+
     fig = plt.figure(figsize=(14.5, 7.4))
     gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 0.7], hspace=0.45, wspace=0.25)
     axes_top = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
@@ -236,6 +251,8 @@ def plot_stratigraphy_stack(
     ax = axes_top[0]
     for tt in range(nt):
         ax.plot(x_m, z_stack[tt, :], color=colors[tt], linewidth=0.9)
+    if highlight_layer is not None:
+        ax.plot(x_m, z_stack[highlight_layer, :], color="red", linewidth=1.6, zorder=3)
     ax.set_title("Raw surfaces", fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.set_ylabel("Elevation [m]", fontproperties=font)
@@ -244,6 +261,8 @@ def plot_stratigraphy_stack(
     ax = axes_top[1]
     for tt in range(nt):
         ax.plot(x_m, deposit_elev[tt, :], color=colors[tt], linewidth=0.9)
+    if highlight_surface is not None:
+        ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
     ax.set_title("After erosion rule", fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
@@ -258,10 +277,13 @@ def plot_stratigraphy_stack(
     for tt in range(1, nt):
         layer = np.maximum(0.0, deposit_elev[tt, :] - deposit_elev[tt - 1, :])
         upper = cumulative + layer
-        ax.fill_between(x_m, cumulative, upper, color=colors[tt], alpha=1.0)
+        layer_color = "red" if highlight_layer == tt else colors[tt]
+        ax.fill_between(x_m, cumulative, upper, color=layer_color, alpha=1.0)
         cumulative = upper
     for tt in range(nt):
         ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
+    if highlight_surface is not None:
+        ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
     ax.set_title("Stacked stratigraphy", fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
@@ -298,6 +320,17 @@ def plot_stratigraphy_stack(
         else:
             y_norm = y / denom
         axes_bottom[1].plot(time_axis, y_norm, linewidth=1.2, color=colors[k])
+    if highlight_layer is not None and highlight_layer >= 1:
+        y = remaining[:, highlight_layer].astype(float)
+        y[:highlight_layer] = np.nan
+        axes_bottom[0].plot(time_axis, y, linewidth=2.4, color="red", zorder=3)
+        denom = remaining[highlight_layer, highlight_layer] if np.isfinite(remaining[highlight_layer, highlight_layer]) else 0.0
+        if denom == 0.0:
+            y_norm = np.zeros_like(y)
+            y_norm[:highlight_layer] = np.nan
+        else:
+            y_norm = y / denom
+        axes_bottom[1].plot(time_axis, y_norm, linewidth=2.4, color="red", zorder=3)
     axes_bottom[0].set_title("Volume preserved (absolute)", fontproperties=font)
     axes_bottom[0].set_xlabel(time_label, fontproperties=font)
     axes_bottom[0].set_ylabel("Volume (unit width)", fontproperties=font)
@@ -310,6 +343,8 @@ def plot_stratigraphy_stack(
     denom0 = remaining[0, 0] if np.isfinite(remaining[0, 0]) and remaining[0, 0] != 0 else np.nan
     ratio = np.clip(remaining[:, 0] / denom0, 0.0, 1.0)
     axes_bottom[2].plot(time_axis, ratio, color="k", linewidth=1.4)
+    if highlight_layer is not None and highlight_layer < len(time_axis):
+        axes_bottom[2].axvline(time_axis[highlight_layer], color="red", linewidth=1.6, zorder=3)
     axes_bottom[2].set_title("Theseus ratio (t0 preserved)", fontproperties=font)
     axes_bottom[2].set_xlabel(time_label, fontproperties=font)
     axes_bottom[2].set_ylabel("Fraction of initial", fontproperties=font)
@@ -349,8 +384,8 @@ def plot_stacked_stratigraphy_section(
     highlight_date: str | np.datetime64 | None = None,
     max_transect_length: float | None = None,
     max_depth_range: float | None = None,
-    max_fig_width: float = 7.0,
-    max_fig_height: float = 2.5,
+    max_fig_width_cm: float = 20.0,
+    max_fig_height_cm: float = 5.0,
     scale_factor: float = 2.0,
 ) -> None:
     """Plot a standalone stacked stratigraphy section with a fixed title.
@@ -366,8 +401,8 @@ def plot_stacked_stratigraphy_section(
     :param highlight_date: Optional date string or datetime64 to highlight a deposit.
     :param max_transect_length: Max transect length for scaling (meters).
     :param max_depth_range: Max depth range for scaling (meters).
-    :param max_fig_width: Max figure width for scaling (inches).
-    :param max_fig_height: Max figure height for scaling (inches).
+    :param max_fig_width_cm: Max figure width for scaling (cm).
+    :param max_fig_height_cm: Max figure height for scaling (cm).
     :param scale_factor: Multiplier for scaled figure size.
     """
     x_m = cube.x[0, :]
@@ -382,20 +417,29 @@ def plot_stacked_stratigraphy_section(
     base = min_elev - 0.01 * abs(min_elev)
 
     highlight_layer = None
+    highlight_surface = None
     if highlight_date is not None and cube.t is not None and len(cube.t) > 0:
         t_dt = datenum_to_datetime64(cube.t)
         highlight_dt = np.datetime64(highlight_date)
         idx = np.searchsorted(t_dt, highlight_dt, side="left")
         if idx >= len(t_dt):
             idx = len(t_dt) - 1
-        if idx > 0:
+        if idx >= 0:
             highlight_layer = int(idx)
+            intact = np.isfinite(z_stack[highlight_layer, :]) & np.isfinite(deposit_elev[highlight_layer, :])
+            intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
+            highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
 
     x_range = float(np.nanmax(x_m) - np.nanmin(x_m)) if len(x_m) else 0.0
-    y_range = float(max_elev - min_elev) if np.isfinite(max_elev) and np.isfinite(min_elev) else 0.0
+    if plot_ylim is not None:
+        y_range = float(plot_ylim[1] - plot_ylim[0])
+    else:
+        y_range = float(max_elev - min_elev) if np.isfinite(max_elev) and np.isfinite(min_elev) else 0.0
     if max_transect_length and max_depth_range and max_transect_length > 0 and max_depth_range > 0:
-        fig_width = (x_range / max_transect_length) * max_fig_width * scale_factor
-        fig_height = (y_range / max_depth_range) * max_fig_height * scale_factor
+        max_fig_width_in = max_fig_width_cm / 2.54
+        max_fig_height_in = max_fig_height_cm / 2.54
+        fig_width = (x_range / max_transect_length) * max_fig_width_in * scale_factor
+        fig_height = (y_range / max_depth_range) * max_fig_height_in * scale_factor
         fig_width = max(fig_width, 3.0)
         fig_height = max(fig_height, 2.0)
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
@@ -417,6 +461,8 @@ def plot_stacked_stratigraphy_section(
         cumulative = upper
     for tt in range(nt):
         ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
+    if highlight_surface is not None:
+        ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
 
     ax.set_title(title, fontproperties=font)
