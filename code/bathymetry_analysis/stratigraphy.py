@@ -12,11 +12,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import Colormap
 from matplotlib.font_manager import FontProperties
+from matplotlib.lines import Line2D
 from pyproj import CRS, Transformer
 from scipy.interpolate import RegularGridInterpolator
 from scipy.io import loadmat
 
 from .bathy import BathyGrid, load_bathy_grid
+from .plot_style import apply_axes_font as _plot_apply_axes_font
+from .plot_style import get_plot_font as _plot_get_plot_font
 
 
 MHW = 0.358
@@ -25,17 +28,11 @@ MLW = -0.590
 
 
 def _get_plot_font() -> FontProperties:
-    return FontProperties(family="Arial", weight="bold", style="italic")
+    return _plot_get_plot_font()
 
 
 def _apply_axes_font(ax, font: FontProperties) -> None:
-    ax.title.set_fontproperties(font)
-    ax.xaxis.label.set_fontproperties(font)
-    ax.yaxis.label.set_fontproperties(font)
-    for label in ax.get_xticklabels() + ax.get_yticklabels():
-        label.set_fontproperties(font)
-    for text in ax.texts:
-        text.set_fontproperties(font)
+    _plot_apply_axes_font(ax, font)
 
 
 @dataclass
@@ -232,6 +229,7 @@ def plot_stratigraphy_stack(
 
     highlight_layer = None
     highlight_surface = None
+    highlight_tag = None
     if highlight_date is not None and cube.t is not None and len(cube.t) > 0:
         t_dt = datenum_to_datetime64(cube.t)
         highlight_dt = np.datetime64(highlight_date)
@@ -240,6 +238,7 @@ def plot_stratigraphy_stack(
             idx = len(t_dt) - 1
         if idx >= 0:
             highlight_layer = int(idx)
+            highlight_tag = str(t_dt[highlight_layer])[:10]
             intact = np.isfinite(z_stack[highlight_layer, :]) & np.isfinite(deposit_elev[highlight_layer, :])
             intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
             highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
@@ -260,6 +259,19 @@ def plot_stratigraphy_stack(
         ax.plot(x_m, z_stack[tt, :], color=colors[tt], linewidth=0.9)
     if highlight_layer is not None:
         ax.plot(x_m, z_stack[highlight_layer, :], color="red", linewidth=1.6, zorder=3)
+        if highlight_tag:
+            legend_label = f"{highlight_tag}"
+            legend_handle = Line2D([], [], color="red", linewidth=1.6, label=legend_label)
+            legend = ax.legend(
+                handles=[legend_handle],
+                loc="upper right",
+                frameon=True,
+                facecolor="white",
+                edgecolor="none",
+                framealpha=0.5,
+            )
+            for text in legend.get_texts():
+                text.set_color("red")
     ax.set_title(_title("(a)", "Raw surfaces"), fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.set_ylabel("Elevation [m]", fontproperties=font)
@@ -301,8 +313,7 @@ def plot_stratigraphy_stack(
     for ax in axes_top:
         ax.set_ylim(y_min, y_max)
 
-    y_max_plot = plot_ylim[1] if plot_ylim is not None else y_max
-    show_water_labels = bool(np.isfinite(y_max_plot) and y_max_plot >= MLW)
+    show_water_labels = True
 
     if scenario == "bruun_slr":
         if plot_xlim is None:
@@ -373,11 +384,11 @@ def plot_stratigraphy_stack(
                 axes_bottom[2].set_xlim(time_min, time_max)
     axes_bottom[2].grid(True, alpha=0.3)
 
-    if show_water_labels:
-        x_text = x_m[0] if len(x_m) else 0.0
-        offset = 0.01 * (y_max - y_min) if np.isfinite(y_max - y_min) and y_max > y_min else 0.15
-        axes_top[0].text(x_text, MHW + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
-        axes_top[0].text(x_text, MLW + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
+    # if show_water_labels:
+    #     x_text = x_m[0] if len(x_m) else 0.0
+    #     offset = 0.01 * (y_max - y_min) if np.isfinite(y_max - y_min) and y_max > y_min else 0.15
+    #     axes_top[1].text(x_text, MHW + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
+    #     axes_top[1].text(x_text, MLW + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for ax in axes_top + axes_bottom:
@@ -403,6 +414,8 @@ def plot_stacked_stratigraphy_section(
     max_fig_width_cm: float = 20.0,
     max_fig_height_cm: float = 5.0,
     scale_factor: float = 2.0,
+    clip_x_to_data: bool = False,
+    clip_y_to_data: bool = False,
 ) -> None:
     """Plot a standalone stacked stratigraphy section with a fixed title.
 
@@ -420,6 +433,8 @@ def plot_stacked_stratigraphy_section(
     :param max_fig_width_cm: Max figure width for scaling (cm).
     :param max_fig_height_cm: Max figure height for scaling (cm).
     :param scale_factor: Multiplier for scaled figure size.
+    :param clip_x_to_data: Clip x-limits to the transect data extent.
+    :param clip_y_to_data: Clip y-limits to the data extent.
     """
     x_m = cube.x[0, :]
     z_stack = cube.z[0, :, :].T
@@ -434,6 +449,7 @@ def plot_stacked_stratigraphy_section(
 
     highlight_layer = None
     highlight_surface = None
+    highlight_tag = None
     if highlight_date is not None and cube.t is not None and len(cube.t) > 0:
         t_dt = datenum_to_datetime64(cube.t)
         highlight_dt = np.datetime64(highlight_date)
@@ -442,12 +458,26 @@ def plot_stacked_stratigraphy_section(
             idx = len(t_dt) - 1
         if idx >= 0:
             highlight_layer = int(idx)
+            highlight_tag = str(t_dt[highlight_layer])[:10]
             intact = np.isfinite(z_stack[highlight_layer, :]) & np.isfinite(deposit_elev[highlight_layer, :])
             intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
             highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
 
-    x_range = float(np.nanmax(x_m) - np.nanmin(x_m)) if len(x_m) else 0.0
-    if plot_ylim is not None:
+    data_xmin = float(np.nanmin(x_m)) if len(x_m) else 0.0
+    data_xmax = float(np.nanmax(x_m)) if len(x_m) else 0.0
+    data_ymin = float(np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev)]))
+    data_ymax = float(np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev)]))
+
+    if clip_x_to_data:
+        x_range = data_xmax - data_xmin
+    elif plot_xlim is not None:
+        x_range = float(plot_xlim[1] - plot_xlim[0])
+    else:
+        x_range = data_xmax - data_xmin
+
+    if clip_y_to_data:
+        y_range = data_ymax - data_ymin
+    elif plot_ylim is not None:
         y_range = float(plot_ylim[1] - plot_ylim[0])
     else:
         y_range = float(max_elev - min_elev) if np.isfinite(max_elev) and np.isfinite(min_elev) else 0.0
@@ -482,24 +512,56 @@ def plot_stacked_stratigraphy_section(
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
 
     ax.set_title(title, fontproperties=font)
+    if highlight_tag:
+        ax.text(
+            0.98,
+            0.98,
+            f"{highlight_tag}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            color="red",
+            fontproperties=font,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.5},
+        )
     ax.set_xlabel("Distance [m]", fontproperties=font)
     ax.set_ylabel("Elevation [m]", fontproperties=font)
     ax.grid(True, alpha=0.3)
 
-    y_range = (plot_ylim[1] - plot_ylim[0]) if plot_ylim is not None else (max_elev - min_elev)
+    if clip_y_to_data:
+        y_min_plot, y_max_plot = data_ymin, data_ymax
+    elif plot_ylim is not None:
+        y_min_plot, y_max_plot = plot_ylim
+    else:
+        y_min_plot, y_max_plot = min_elev, max_elev
+    y_range = y_max_plot - y_min_plot
+    if not np.isfinite(y_range) or y_range <= 0:
+        y_range = 1.0
+    fig.canvas.draw()
+    font_size = font.get_size_in_points()
+    if not font_size:
+        font_size = float(plt.rcParams.get("font.size", 10.0))
+    text_px = font_size * fig.dpi / 72.0
+    text_px += 1.1 * text_px
+    bbox_height_px = ax.bbox.height if ax.bbox.height > 0 else 1.0
+    data_per_px = y_range / bbox_height_px
+    mhw_margin = text_px * data_per_px
+    y_max_plot = max(y_max_plot, mhw_val + mhw_margin)
+    y_range = y_max_plot - y_min_plot
     offset = 0.01 * y_range if np.isfinite(y_range) and y_range > 0 else 0.15
     x_text = x_m[0] if len(x_m) else 0.0
-    y_max = plot_ylim[1] if plot_ylim is not None else max_elev
-    if np.isfinite(y_max) and y_max >= mlw_val:
+    if np.isfinite(y_max_plot) and y_max_plot >= mlw_val:
         ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
         ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
 
-    if plot_xlim is not None:
+    if clip_x_to_data:
+        ax.set_xlim(data_xmin, data_xmax)
+    elif plot_xlim is not None:
         ax.set_xlim(plot_xlim)
     else:
         ax.set_xlim(0.0, float(x_m[-1]) if len(x_m) else 0.0)
-    if plot_ylim is not None:
-        ax.set_ylim(plot_ylim)
+    if clip_y_to_data or plot_ylim is not None:
+        ax.set_ylim(y_min_plot, y_max_plot)
     if x_ticks is not None:
         ax.set_xticks(x_ticks)
     _apply_axes_font(ax, font)

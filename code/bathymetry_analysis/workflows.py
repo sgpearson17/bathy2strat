@@ -18,10 +18,13 @@ from scipy.interpolate import splprep, splev
 from utils.date_utils import interval_highlight_mask
 from bathy_formatter import get_named_colormap
 from .bathy import load_clrmap_file
+from .plot_style import apply_axes_font, apply_global_style, get_plot_font
 from .stratigraphy import (
     StratigraphyConfig,
     Transect,
     compute_stratigraphy,
+    datenum_to_datetime64,
+    compute_deposit_elev_1d,
     extract_transect_cube,
     load_bathy_cube,
     load_transects_from_shapefiles,
@@ -93,6 +96,7 @@ DEFAULT_REQUIRED_MODULES = {
     "pyproj": "pyproj",
     "geopandas": "geopandas",
     "joblib": "joblib",
+    "imageio": "imageio",
 }
 
 DEFAULT_METRICS = {
@@ -117,6 +121,164 @@ def _label_for_index(index: int) -> str:
     return letter * repeat
 
 
+def _normalize_highlight_dates(highlight_dates) -> list[str | np.datetime64]:
+    """Normalize highlight dates into a list."""
+    if highlight_dates is None:
+        return []
+    if isinstance(highlight_dates, (list, tuple, np.ndarray)):
+        return [value for value in highlight_dates if value is not None]
+    return [highlight_dates]
+
+
+def _section_figsize(
+    x_range: float,
+    y_range: float,
+    max_transect_length: float | None,
+    max_depth_range: float | None,
+    max_fig_width_cm: float,
+    max_fig_height_cm: float,
+    scale_factor: float = 2.0,
+) -> tuple[float, float]:
+    """Compute a consistent figure size for cross-section plots."""
+    if max_transect_length and max_depth_range and max_transect_length > 0 and max_depth_range > 0:
+        max_fig_width_in = max_fig_width_cm / 2.54
+        max_fig_height_in = max_fig_height_cm / 2.54
+        fig_width = (x_range / max_transect_length) * max_fig_width_in * scale_factor
+        fig_height = (y_range / max_depth_range) * max_fig_height_in * scale_factor
+        fig_width = max(fig_width, 3.0)
+        fig_height = max(fig_height, 2.0)
+        return fig_width, fig_height
+    return 14.0, 4.0
+
+
+def _write_stratigraphy_gif(
+    slice_cube,
+    out_path: Path,
+    section_title: str,
+    mhw: float,
+    mlw: float,
+    plot_ylim: tuple[float, float] | None,
+    highlight_dates: list[str | np.datetime64] | None,
+    max_transect_length: float | None,
+    max_depth_range: float | None,
+    max_fig_width_cm: float,
+    max_fig_height_cm: float,
+    fps: int = 6,
+    frame_stride: int = 1,
+) -> None:
+    """Create an animated GIF showing stacked stratigraphy over time."""
+    try:
+        import imageio.v2 as imageio
+    except ImportError as exc:
+        raise ImportError("imageio is required for GIF export") from exc
+
+    apply_global_style()
+    font = get_plot_font()
+
+    x_m = slice_cube.x[0, :]
+    z_stack = slice_cube.z[0, :, :].T
+    deposit_elev_full = compute_deposit_elev_1d(z_stack)
+    nt = z_stack.shape[0]
+    colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
+
+    min_elev = float(np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev_full)]))
+    max_elev = float(np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev_full)]))
+    y_min_plot, y_max_plot = (plot_ylim if plot_ylim is not None else (min_elev, max_elev))
+    base = min_elev - 0.01 * abs(min_elev)
+    # Clip to the baseline to avoid extra whitespace below the section.
+    y_min_plot = max(base, y_min_plot)
+    y_max_plot = max(y_max_plot, mhw + 0.05 * abs(mhw))
+    y_range = y_max_plot - y_min_plot
+    if not np.isfinite(y_range) or y_range <= 0:
+        y_range = 1.0
+
+    x_range = float(np.nanmax(x_m) - np.nanmin(x_m)) if len(x_m) else 0.0
+    fig_w, fig_h = _section_figsize(
+        x_range,
+        y_range,
+        max_transect_length,
+        max_depth_range,
+        max_fig_width_cm,
+        max_fig_height_cm,
+    )
+
+    t_dt = datenum_to_datetime64(slice_cube.t)
+    highlight_idx = None
+    highlight_tag = None
+    if highlight_dates:
+        # Only one highlight date per GIF; caller should pass a single date.
+        highlight_dt = np.datetime64(highlight_dates[0])
+        idx = int(np.searchsorted(t_dt, highlight_dt, side="left"))
+        if idx >= len(t_dt):
+            idx = len(t_dt) - 1
+        if idx >= 0:
+            highlight_idx = idx
+            highlight_tag = str(t_dt[highlight_idx])[:10]
+    frames = []
+    for idx in range(0, nt, max(frame_stride, 1)):
+        # Recompute stratigraphy using surveys up to this frame to preserve erosion timing.
+        deposit_elev = compute_deposit_elev_1d(z_stack[: idx + 1, :])
+        highlight_layer = highlight_idx if highlight_idx is not None and idx >= highlight_idx else None
+        highlight_surface = None
+        if highlight_layer is not None:
+            intact = np.isfinite(z_stack[highlight_layer, :]) & np.isfinite(deposit_elev[highlight_layer, :])
+            intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
+            highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+        base = min_elev - 0.01 * abs(min_elev)
+        cumulative = base + np.zeros_like(x_m)
+        layer_color = "red" if highlight_layer == 0 else colors[0]
+        ax.fill_between(x_m, base, deposit_elev[0, :], color=layer_color, alpha=1.0)
+        cumulative = deposit_elev[0, :]
+        for tt in range(1, idx + 1):
+            layer = np.maximum(0.0, deposit_elev[tt, :] - deposit_elev[tt - 1, :])
+            upper = cumulative + layer
+            layer_color = "red" if highlight_layer == tt else colors[tt]
+            ax.fill_between(x_m, cumulative, upper, color=layer_color, alpha=1.0, zorder=1)
+            cumulative = upper
+        for tt in range(idx + 1):
+            ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
+        if highlight_surface is not None:
+            ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
+        ax.plot(x_m, deposit_elev[idx, :], color="k", linewidth=1.6)
+
+        ax.axhline(mhw, linestyle="--", color="k", linewidth=0.6, zorder=0)
+        ax.axhline(mlw, linestyle="--", color="k", linewidth=0.6, zorder=0)
+
+        date_str = str(t_dt[idx])[:10] if idx < len(t_dt) else ""
+        ax.set_title(f"{section_title} | {date_str}")
+        ax.set_xlabel("Distance [m]")
+        ax.set_ylabel("Elevation [m]")
+        if highlight_layer is not None and highlight_tag:
+            ax.text(
+                0.98,
+                0.98,
+                f"{highlight_tag}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                color="red",
+                fontproperties=font,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.5},
+            )
+        apply_axes_font(ax, font)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0.0, float(x_m[-1]) if len(x_m) else 0.0)
+        ax.set_ylim(y_min_plot, y_max_plot)
+
+        fig.tight_layout()
+        fig.canvas.draw()
+        # Use buffer_rgba to support newer Matplotlib backends that dropped tostring_rgb.
+        image = np.asarray(fig.canvas.buffer_rgba())
+        if image.shape[-1] == 4:
+            image = image[:, :, :3]
+        frames.append(image)
+        plt.close(fig)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimsave(out_path, frames, fps=fps, loop=0)
+
+
 def run_transect_slice_plots(
     bathy_nc_path: str | Path,
     output_root: str | Path,
@@ -124,13 +286,16 @@ def run_transect_slice_plots(
     tick_spacing_m: float = 100.0,
     mhw: float = 0.358,
     mlw: float = -0.590,
-    highlight_date: str | np.datetime64 | None = None,
+    highlight_date: str | np.datetime64 | list[str | np.datetime64] | None = None,
     n_points: int = 400,
     initial_index: int = 0,
     dx: float = 20.0,
     target_crs: str = "EPSG:32618",
     max_fig_width_cm: float = 20.0,
     max_fig_height_cm: float = 5.0,
+    make_gif: bool = False,
+    gif_fps: int = 6,
+    gif_stride: int = 1,
 ) -> dict[str, object]:
     """Plot 6-panel stratigraphy summaries for a list of transect slices.
 
@@ -141,13 +306,16 @@ def run_transect_slice_plots(
         tick_spacing_m: Tick spacing along transects (meters).
         mhw: Mean high water elevation.
         mlw: Mean low water elevation.
-        highlight_date: Optional date string or datetime64 to highlight a deposit.
+        highlight_date: Optional date string(s) or datetime64(s) to highlight deposits.
         n_points: Number of points used for each transect slice.
         initial_index: Initial stratigraphy index.
         dx: Grid spacing in meters.
         target_crs: CRS string for plot metadata.
         max_fig_width_cm: Maximum plot width for scaled sections (cm).
         max_fig_height_cm: Maximum plot height for scaled sections (cm).
+        make_gif: Whether to create a stratigraphy GIF for each transect.
+        gif_fps: Frames per second for GIF export.
+        gif_stride: Step between frames (e.g., 2 uses every other survey).
 
     Returns:
         Dict containing the bathy cube, labels, and output directory for reuse.
@@ -183,65 +351,111 @@ def run_transect_slice_plots(
         plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
         max_depth_range = plot_ylim[1] - plot_ylim[0]
 
+    highlight_dates = _normalize_highlight_dates(highlight_date)
+
     for label, transect, slice_cube, slice_result, length_m in entries:
         section_title = f"{label}-{label}'"
-        plot_stratigraphy_stack(
-            slice_cube,
-            slice_result,
-            slice_dir / f"strat_overview_section_{transect.name}.png",
-            f"overview_{label}",
-            time_vals=slice_cube.t,
-            title_prefix=section_title,
-        )
-
         xticks_m = np.arange(0.0, length_m + 1e-6, tick_spacing_m)
-        plot_stacked_stratigraphy_section(
-            slice_cube,
-            slice_dir / f"strat_section_{label}.png",
-            f"Cross-section {label}-{label}'",
-            plot_xlim=None,
-            plot_ylim=plot_ylim,
-            x_ticks=xticks_m,
-            mhw=mhw,
-            mlw=mlw,
-            highlight_date=None,
-            max_transect_length=max_len_m,
-            max_depth_range=max_depth_range,
-            max_fig_width_cm=max_fig_width_cm,
-            max_fig_height_cm=max_fig_height_cm,
-        )
 
-        if highlight_date:
-            highlight_str = highlight_date
-            if not isinstance(highlight_date, str):
-                highlight_str = str(np.datetime64(highlight_date))
-            highlight_tag = highlight_str[:10]
-            slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
-            slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+        if not highlight_dates:
             plot_stratigraphy_stack(
                 slice_cube,
                 slice_result,
-                slice_highlight_dir / f"strat_{transect.name}_highlight_{highlight_tag}.png",
-                f"overview_slice_{label}",
+                slice_dir / f"strat_overview_section_{transect.name}.png",
+                f"overview_{label}",
                 time_vals=slice_cube.t,
-                highlight_date=highlight_date,
                 title_prefix=section_title,
             )
             plot_stacked_stratigraphy_section(
                 slice_cube,
-                slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                slice_dir / f"strat_section_{label}.png",
                 f"Cross-section {label}-{label}'",
                 plot_xlim=None,
                 plot_ylim=plot_ylim,
                 x_ticks=xticks_m,
                 mhw=mhw,
                 mlw=mlw,
-                highlight_date=highlight_date,
+                highlight_date=None,
                 max_transect_length=max_len_m,
                 max_depth_range=max_depth_range,
                 max_fig_width_cm=max_fig_width_cm,
                 max_fig_height_cm=max_fig_height_cm,
+                clip_x_to_data=True,
+                clip_y_to_data=True,
             )
+        else:
+            for date_val in highlight_dates:
+                highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
+                highlight_tag = highlight_str[:10]
+                slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+                plot_stratigraphy_stack(
+                    slice_cube,
+                    slice_result,
+                    slice_highlight_dir / f"strat_{transect.name}_highlight_{highlight_tag}.png",
+                    f"overview_slice_{label}",
+                    time_vals=slice_cube.t,
+                    highlight_date=date_val,
+                    title_prefix=section_title,
+                )
+                plot_stacked_stratigraphy_section(
+                    slice_cube,
+                    slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                    f"Cross-section {label}-{label}'",
+                    plot_xlim=None,
+                    plot_ylim=plot_ylim,
+                    x_ticks=xticks_m,
+                    mhw=mhw,
+                    mlw=mlw,
+                    highlight_date=date_val,
+                    max_transect_length=max_len_m,
+                    max_depth_range=max_depth_range,
+                    max_fig_width_cm=max_fig_width_cm,
+                    max_fig_height_cm=max_fig_height_cm,
+                    clip_x_to_data=True,
+                    clip_y_to_data=True,
+                )
+
+        if make_gif:
+            if not highlight_dates:
+                gif_path = slice_dir / f"strat_section_{label}.gif"
+                _write_stratigraphy_gif(
+                    slice_cube,
+                    gif_path,
+                    section_title,
+                    mhw=mhw,
+                    mlw=mlw,
+                    plot_ylim=plot_ylim,
+                    highlight_dates=None,
+                    max_transect_length=max_len_m,
+                    max_depth_range=max_depth_range,
+                    max_fig_width_cm=max_fig_width_cm,
+                    max_fig_height_cm=max_fig_height_cm,
+                    fps=gif_fps,
+                    frame_stride=gif_stride,
+                )
+            else:
+                for date_val in highlight_dates:
+                    highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
+                    highlight_tag = highlight_str[:10]
+                    slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                    slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+                    gif_path = slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.gif"
+                    _write_stratigraphy_gif(
+                        slice_cube,
+                        gif_path,
+                        section_title,
+                        mhw=mhw,
+                        mlw=mlw,
+                        plot_ylim=plot_ylim,
+                        highlight_dates=[date_val],
+                        max_transect_length=max_len_m,
+                        max_depth_range=max_depth_range,
+                        max_fig_width_cm=max_fig_width_cm,
+                        max_fig_height_cm=max_fig_height_cm,
+                        fps=gif_fps,
+                        frame_stride=gif_stride,
+                    )
 
     return {
         "bathy_cube": bathy_cube,
@@ -249,6 +463,7 @@ def run_transect_slice_plots(
         "transect_rows_km": transect_rows_km,
         "output_root": output_root,
         "slice_dir": slice_dir,
+        "highlight_dates": highlight_dates,
     }
 
 
@@ -277,6 +492,8 @@ def plot_transect_location_plan(
     Returns:
         Path to the saved plan figure.
     """
+    apply_global_style()
+    font = get_plot_font()
 
     def _plot_transect_ticks(ax, x1, y1, x2, y2, spacing_km, tick_len_km) -> None:
         """Draw small perpendicular ticks along a transect line."""
@@ -314,19 +531,22 @@ def plot_transect_location_plan(
     ax.set_xlabel("Easting [km]")
     ax.set_ylabel("Northing [km]")
     ax.set_title("Transect Locations (Latest Bathymetry)")
+    apply_axes_font(ax, font)
     ax.grid(True, color="0.5", alpha=0.4)
     ax.set_axisbelow(False)
 
     cb = fig.colorbar(cf, ax=ax)
-    cb.set_label("Depth [m]")
+    cb.set_label("Depth [m]", fontproperties=font)
+    for tick in cb.ax.get_yticklabels():
+        tick.set_fontproperties(font)
 
     tick_spacing_km = tick_spacing_m / 1000.0
     for (x1, y1, x2, y2), label in zip(transect_rows_km, labels):
         ax.plot([x1, x2], [y1, y2], "-k", linewidth=1.0)
         _plot_transect_ticks(ax, x1, y1, x2, y2, tick_spacing_km, tick_length_km)
         ax.scatter([x1, x2], [y1, y2], s=20, c="w", edgecolors="k", zorder=3)
-        ax.text(x1 - 0.03, y1 + 0.03, label, fontweight="bold", color="k")
-        ax.text(x2 + 0.03, y2 - 0.03, f"{label}'", fontweight="bold", color="k")
+        ax.text(x1 - 0.03, y1 + 0.03, label, fontproperties=font, color="k")
+        ax.text(x2 + 0.03, y2 - 0.03, f"{label}'", fontproperties=font, color="k")
 
     plan_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
     plan_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +622,8 @@ def plot_transect_location_plan_from_transects(
     Returns:
         Path to the saved plan figure.
     """
+    apply_global_style()
+    font = get_plot_font()
     labels = labels or [_label_for_index(i) for i in range(len(transects))]
     output_root = Path(output_root)
 
@@ -420,11 +642,14 @@ def plot_transect_location_plan_from_transects(
     ax.set_xlabel("Easting [km]")
     ax.set_ylabel("Northing [km]")
     ax.set_title("Transect Locations (Latest Bathymetry)")
+    apply_axes_font(ax, font)
     ax.grid(True, color="0.5", alpha=0.4)
     ax.set_axisbelow(False)
 
     cb = fig.colorbar(cf, ax=ax)
-    cb.set_label("Depth [m]")
+    cb.set_label("Depth [m]", fontproperties=font)
+    for tick in cb.ax.get_yticklabels():
+        tick.set_fontproperties(font)
 
     tick_spacing_km = tick_spacing_m / 1000.0
     for transect, label in zip(transects, labels):
@@ -433,8 +658,8 @@ def plot_transect_location_plan_from_transects(
         ax.plot(x_line, y_line, "-k", linewidth=1.0)
         _plot_ticks_along_polyline(ax, x_line, y_line, tick_spacing_km, tick_length_km)
         ax.scatter([x_line[0], x_line[-1]], [y_line[0], y_line[-1]], s=20, c="w", edgecolors="k", zorder=3)
-        ax.text(x_line[0] - 0.03, y_line[0] + 0.03, label, fontweight="bold", color="k")
-        ax.text(x_line[-1] + 0.03, y_line[-1] - 0.03, f"{label}'", fontweight="bold", color="k")
+        ax.text(x_line[0] - 0.03, y_line[0] + 0.03, label, fontproperties=font, color="k")
+        ax.text(x_line[-1] + 0.03, y_line[-1] - 0.03, f"{label}'", fontproperties=font, color="k")
 
     map_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
     map_dir.mkdir(parents=True, exist_ok=True)
@@ -462,12 +687,15 @@ def run_shapefile_transect_plots(
     map_tick_length_km: float = 0.02,
     mhw: float = 0.358,
     mlw: float = -0.590,
-    highlight_date: str | np.datetime64 | None = None,
+    highlight_date: str | np.datetime64 | list[str | np.datetime64] | None = None,
     initial_index: int = 0,
     dx: float = 20.0,
     max_fig_width_cm: float = 20.0,
     max_fig_height_cm: float = 5.0,
     map_output_name: str = "transect_location_plan_shapefiles.png",
+    make_gif: bool = False,
+    gif_fps: int = 6,
+    gif_stride: int = 1,
 ) -> dict[str, object]:
     """Plot stratigraphy sections and a location map for shapefile transects.
 
@@ -487,12 +715,15 @@ def run_shapefile_transect_plots(
         map_tick_length_km: Tick length for map ticks (km).
         mhw: Mean high water elevation.
         mlw: Mean low water elevation.
-        highlight_date: Optional date string or datetime64 to highlight a deposit.
+        highlight_date: Optional date string(s) or datetime64(s) to highlight deposits.
         initial_index: Initial stratigraphy index.
         dx: Grid spacing in meters.
         max_fig_width_cm: Maximum plot width for scaled sections (cm).
         max_fig_height_cm: Maximum plot height for scaled sections (cm).
         map_output_name: Filename for the transect location plan.
+        make_gif: Whether to create a stratigraphy GIF for each transect.
+        gif_fps: Frames per second for GIF export.
+        gif_stride: Step between frames (e.g., 2 uses every other survey).
 
     Returns:
         Dict containing bathy cube, transects, and output paths.
@@ -581,65 +812,111 @@ def run_shapefile_transect_plots(
         plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
         max_depth_range = plot_ylim[1] - plot_ylim[0]
 
+    highlight_dates = _normalize_highlight_dates(highlight_date)
+
     for label, transect, slice_cube, slice_result, length_m in entries:
         section_title = f"{label}-{label}'"
-        plot_stratigraphy_stack(
-            slice_cube,
-            slice_result,
-            slice_dir / f"strat_overview_section_{label}.png",
-            f"overview_{label}",
-            time_vals=slice_cube.t,
-            title_prefix=section_title,
-        )
-
         xticks_m = np.arange(0.0, length_m + 1e-6, tick_spacing_m)
-        plot_stacked_stratigraphy_section(
-            slice_cube,
-            slice_dir / f"strat_section_{label}.png",
-            f"Cross-section {section_title}",
-            plot_xlim=None,
-            plot_ylim=plot_ylim,
-            x_ticks=xticks_m,
-            mhw=mhw,
-            mlw=mlw,
-            highlight_date=None,
-            max_transect_length=max_len_m,
-            max_depth_range=max_depth_range,
-            max_fig_width_cm=max_fig_width_cm,
-            max_fig_height_cm=max_fig_height_cm,
-        )
 
-        if highlight_date:
-            highlight_str = highlight_date
-            if not isinstance(highlight_date, str):
-                highlight_str = str(np.datetime64(highlight_date))
-            highlight_tag = highlight_str[:10]
-            slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
-            slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+        if not highlight_dates:
             plot_stratigraphy_stack(
                 slice_cube,
                 slice_result,
-                slice_highlight_dir / f"strat_{label}_highlight_{highlight_tag}.png",
-                f"overview_slice_{label}",
+                slice_dir / f"strat_overview_section_{label}.png",
+                f"overview_{label}",
                 time_vals=slice_cube.t,
-                highlight_date=highlight_date,
                 title_prefix=section_title,
             )
             plot_stacked_stratigraphy_section(
                 slice_cube,
-                slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                slice_dir / f"strat_section_{label}.png",
                 f"Cross-section {section_title}",
                 plot_xlim=None,
                 plot_ylim=plot_ylim,
                 x_ticks=xticks_m,
                 mhw=mhw,
                 mlw=mlw,
-                highlight_date=highlight_date,
+                highlight_date=None,
                 max_transect_length=max_len_m,
                 max_depth_range=max_depth_range,
                 max_fig_width_cm=max_fig_width_cm,
                 max_fig_height_cm=max_fig_height_cm,
+                clip_x_to_data=True,
+                clip_y_to_data=True,
             )
+        else:
+            for date_val in highlight_dates:
+                highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
+                highlight_tag = highlight_str[:10]
+                slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+                plot_stratigraphy_stack(
+                    slice_cube,
+                    slice_result,
+                    slice_highlight_dir / f"strat_{label}_highlight_{highlight_tag}.png",
+                    f"overview_slice_{label}",
+                    time_vals=slice_cube.t,
+                    highlight_date=date_val,
+                    title_prefix=section_title,
+                )
+                plot_stacked_stratigraphy_section(
+                    slice_cube,
+                    slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                    f"Cross-section {section_title}",
+                    plot_xlim=None,
+                    plot_ylim=plot_ylim,
+                    x_ticks=xticks_m,
+                    mhw=mhw,
+                    mlw=mlw,
+                    highlight_date=date_val,
+                    max_transect_length=max_len_m,
+                    max_depth_range=max_depth_range,
+                    max_fig_width_cm=max_fig_width_cm,
+                    max_fig_height_cm=max_fig_height_cm,
+                    clip_x_to_data=True,
+                    clip_y_to_data=True,
+                )
+
+        if make_gif:
+            if not highlight_dates:
+                gif_path = slice_dir / f"strat_section_{label}.gif"
+                _write_stratigraphy_gif(
+                    slice_cube,
+                    gif_path,
+                    section_title,
+                    mhw=mhw,
+                    mlw=mlw,
+                    plot_ylim=plot_ylim,
+                    highlight_dates=None,
+                    max_transect_length=max_len_m,
+                    max_depth_range=max_depth_range,
+                    max_fig_width_cm=max_fig_width_cm,
+                    max_fig_height_cm=max_fig_height_cm,
+                    fps=gif_fps,
+                    frame_stride=gif_stride,
+                )
+            else:
+                for date_val in highlight_dates:
+                    highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
+                    highlight_tag = highlight_str[:10]
+                    slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                    slice_highlight_dir.mkdir(parents=True, exist_ok=True)
+                    gif_path = slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.gif"
+                    _write_stratigraphy_gif(
+                        slice_cube,
+                        gif_path,
+                        section_title,
+                        mhw=mhw,
+                        mlw=mlw,
+                        plot_ylim=plot_ylim,
+                        highlight_dates=[date_val],
+                        max_transect_length=max_len_m,
+                        max_depth_range=max_depth_range,
+                        max_fig_width_cm=max_fig_width_cm,
+                        max_fig_height_cm=max_fig_height_cm,
+                        fps=gif_fps,
+                        frame_stride=gif_stride,
+                    )
 
     if valid_transects:
         map_path = plot_transect_location_plan_from_transects(
@@ -665,6 +942,7 @@ def run_shapefile_transect_plots(
         "slice_dir": slice_dir,
         "map_path": map_path,
         "label_map": label_map,
+        "highlight_dates": highlight_dates,
     }
 
 
