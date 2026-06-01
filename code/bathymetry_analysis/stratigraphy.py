@@ -222,6 +222,7 @@ def plot_stratigraphy_stack(
     x_m = cube.x[0, :]
     z_stack = cube.z[0, :, :].T
     deposit_elev = compute_deposit_elev_1d(z_stack)
+    max_surface = np.nanmax(z_stack, axis=0)
     nt = z_stack.shape[0]
     colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
     dx = float(x_m[1] - x_m[0]) if x_m.size > 1 else 1.0
@@ -303,6 +304,8 @@ def plot_stratigraphy_stack(
         ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
     if highlight_surface is not None:
         ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
+    if np.any(np.isfinite(max_surface)):
+        ax.plot(x_m, max_surface, color="0.2", linestyle="--", linewidth=0.8, zorder=2)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
     ax.set_title(_title("(c)", "Stacked stratigraphy"), fontproperties=font)
     ax.set_xlabel("Distance [m]", fontproperties=font)
@@ -439,6 +442,7 @@ def plot_stacked_stratigraphy_section(
     x_m = cube.x[0, :]
     z_stack = cube.z[0, :, :].T
     deposit_elev = compute_deposit_elev_1d(z_stack)
+    max_surface = np.nanmax(z_stack, axis=0)
     nt = z_stack.shape[0]
     colors = plt.cm.viridis(np.linspace(0.15, 0.95, nt))
     font = _get_plot_font()
@@ -494,8 +498,10 @@ def plot_stacked_stratigraphy_section(
 
     mhw_val = MHW if mhw is None else mhw
     mlw_val = MLW if mlw is None else mlw
-    ax.axhline(mhw_val, linestyle="--", color="k", linewidth=0.6, zorder=0)
-    ax.axhline(mlw_val, linestyle="--", color="k", linewidth=0.6, zorder=0)
+    mhw_color = "#0b2e5b"
+    dash_style = (0, (6, 3))
+    ax.axhline(mhw_val, linestyle=dash_style, color=mhw_color, linewidth=0.5, zorder=0)
+    ax.axhline(mlw_val, linestyle=dash_style, color=mhw_color, linewidth=0.5, zorder=0)
     cumulative = base + np.zeros_like(x_m)
     ax.fill_between(x_m, base, deposit_elev[0, :], color=colors[0], alpha=1.0)
     cumulative = deposit_elev[0, :]
@@ -509,6 +515,8 @@ def plot_stacked_stratigraphy_section(
         ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
     if highlight_surface is not None:
         ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
+    if np.any(np.isfinite(max_surface)):
+        ax.plot(x_m, max_surface, color="0.2", linestyle="--", linewidth=0.8, zorder=2)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
 
     ax.set_title(title, fontproperties=font)
@@ -551,8 +559,8 @@ def plot_stacked_stratigraphy_section(
     offset = 0.01 * y_range if np.isfinite(y_range) and y_range > 0 else 0.15
     x_text = x_m[0] if len(x_m) else 0.0
     if np.isfinite(y_max_plot) and y_max_plot >= mlw_val:
-        ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font)
-        ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font)
+        ax.text(x_text, mhw_val + offset, "MHW", fontsize=9, zorder=0, fontproperties=font, color=mhw_color)
+        ax.text(x_text, mlw_val + offset, "MLW", fontsize=9, zorder=0, fontproperties=font, color=mhw_color)
 
     if clip_x_to_data:
         ax.set_xlim(data_xmin, data_xmax)

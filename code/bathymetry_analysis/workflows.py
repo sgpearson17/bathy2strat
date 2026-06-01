@@ -240,10 +240,15 @@ def _write_stratigraphy_gif(
             ax.plot(x_m, deposit_elev[tt, :], color="k", linewidth=0.6, alpha=0.8)
         if highlight_surface is not None:
             ax.plot(x_m, highlight_surface, color="red", linewidth=1.6, zorder=3)
+        max_surface = np.nanmax(z_stack[: idx + 1, :], axis=0)
+        if np.any(np.isfinite(max_surface)):
+            ax.plot(x_m, max_surface, color="0.2", linestyle="--", linewidth=0.8, zorder=2)
         ax.plot(x_m, deposit_elev[idx, :], color="k", linewidth=1.6)
 
-        ax.axhline(mhw, linestyle="--", color="k", linewidth=0.6, zorder=0)
-        ax.axhline(mlw, linestyle="--", color="k", linewidth=0.6, zorder=0)
+        mhw_color = "#0b2e5b"
+        dash_style = (0, (6, 3))
+        ax.axhline(mhw, linestyle=dash_style, color=mhw_color, linewidth=0.5, zorder=0)
+        ax.axhline(mlw, linestyle=dash_style, color=mhw_color, linewidth=0.5, zorder=0)
 
         date_str = str(t_dt[idx])[:10] if idx < len(t_dt) else ""
         ax.set_title(f"{section_title} | {date_str}")
@@ -467,6 +472,121 @@ def run_transect_slice_plots(
     }
 
 
+def run_transect_plots(
+    source: str,
+    bathy_nc_path: str | Path,
+    output_root: str | Path,
+    transect_rows_km: np.ndarray | None = None,
+    shp_dir: str | Path | None = None,
+    tick_spacing_m: float = 100.0,
+    mhw: float = 0.358,
+    mlw: float = -0.590,
+    highlight_date: str | np.datetime64 | list[str | np.datetime64] | None = None,
+    n_points: int = 400,
+    initial_index: int = 0,
+    dx: float = 20.0,
+    target_crs: str = "EPSG:32618",
+    max_fig_width_cm: float = 20.0,
+    max_fig_height_cm: float = 5.0,
+    make_gif: bool = False,
+    gif_fps: int = 6,
+    gif_stride: int = 1,
+    source_crs: str | None = None,
+    prompt_if_missing_crs: bool = True,
+    prefer_xy_columns: bool = False,
+    smooth_transects: bool = True,
+    spline_points: int = 1000,
+    distance_mode: str = "curvy",
+    map_tick_length_km: float = 0.02,
+    map_output_name: str = "transect_location_plan_shapefiles.png",
+) -> dict[str, object]:
+    """Run transect plots from endpoints or shapefiles with a unified interface.
+
+    Args:
+        source: "endpoints" for transect rows or "shapefiles" for shapefile inputs.
+        bathy_nc_path: Path to the bathymetry cube netCDF file.
+        output_root: Output root directory for plots.
+        transect_rows_km: Array of transect endpoints (required for endpoints).
+        shp_dir: Directory containing shapefiles (required for shapefiles).
+        tick_spacing_m: Tick spacing along transects (meters).
+        mhw: Mean high water elevation.
+        mlw: Mean low water elevation.
+        highlight_date: Optional highlight date(s).
+        n_points: Number of points used for each transect slice.
+        initial_index: Initial stratigraphy index.
+        dx: Grid spacing in meters.
+        target_crs: Target CRS for transect endpoints.
+        max_fig_width_cm: Maximum plot width for scaled sections (cm).
+        max_fig_height_cm: Maximum plot height for scaled sections (cm).
+        make_gif: Whether to create stratigraphy GIFs.
+        gif_fps: Frames per second for GIF export.
+        gif_stride: Step between frames (e.g., 2 uses every other survey).
+        source_crs: Optional CRS for shapefile inputs.
+        prompt_if_missing_crs: Prompt if shapefile CRS metadata is missing.
+        prefer_xy_columns: Prefer DBF x/y columns over line geometry.
+        smooth_transects: Whether to spline-smooth shapefile transects.
+        spline_points: Number of spline points for smoothed transects.
+        distance_mode: "curvy" uses polylines; "straight" uses endpoints.
+        map_tick_length_km: Tick length for transect ticks in maps.
+        map_output_name: Filename for shapefile transect maps.
+
+    Returns:
+        Dict containing outputs from the selected workflow.
+    """
+    source = source.lower().strip()
+    if source == "endpoints":
+        if transect_rows_km is None:
+            raise ValueError("transect_rows_km is required when source='endpoints'.")
+        return run_transect_slice_plots(
+            bathy_nc_path=bathy_nc_path,
+            output_root=output_root,
+            transect_rows_km=transect_rows_km,
+            tick_spacing_m=tick_spacing_m,
+            mhw=mhw,
+            mlw=mlw,
+            highlight_date=highlight_date,
+            n_points=n_points,
+            initial_index=initial_index,
+            dx=dx,
+            target_crs=target_crs,
+            max_fig_width_cm=max_fig_width_cm,
+            max_fig_height_cm=max_fig_height_cm,
+            make_gif=make_gif,
+            gif_fps=gif_fps,
+            gif_stride=gif_stride,
+        )
+    if source == "shapefiles":
+        if shp_dir is None:
+            raise ValueError("shp_dir is required when source='shapefiles'.")
+        return run_shapefile_transect_plots(
+            bathy_nc_path=bathy_nc_path,
+            output_root=output_root,
+            shp_dir=shp_dir,
+            target_crs=target_crs,
+            source_crs=source_crs,
+            prompt_if_missing_crs=prompt_if_missing_crs,
+            prefer_xy_columns=prefer_xy_columns,
+            smooth_transects=smooth_transects,
+            spline_points=spline_points,
+            distance_mode=distance_mode,
+            n_points=n_points,
+            tick_spacing_m=tick_spacing_m,
+            map_tick_length_km=map_tick_length_km,
+            mhw=mhw,
+            mlw=mlw,
+            highlight_date=highlight_date,
+            initial_index=initial_index,
+            dx=dx,
+            max_fig_width_cm=max_fig_width_cm,
+            max_fig_height_cm=max_fig_height_cm,
+            map_output_name=map_output_name,
+            make_gif=make_gif,
+            gif_fps=gif_fps,
+            gif_stride=gif_stride,
+        )
+    raise ValueError("source must be 'endpoints' or 'shapefiles'.")
+
+
 def plot_transect_location_plan(
     bathy_cube,
     transect_rows_km: np.ndarray,
@@ -476,6 +596,9 @@ def plot_transect_location_plan(
     tick_spacing_m: float = 100.0,
     tick_length_km: float = 0.02,
     cmap_name: str = "kg2",
+    make_inset: bool = False,
+    inset_scale: float = 0.5,
+    inset_text_scale: float = 1.4,
 ) -> Path:
     """Plot transect locations on the latest bathymetry surface.
 
@@ -488,6 +611,9 @@ def plot_transect_location_plan(
         tick_spacing_m: Tick spacing along transects (meters).
         tick_length_km: Tick length for transect tick marks (km).
         cmap_name: Colormap name for bathymetry rendering.
+        make_inset: Whether to save a smaller inset version of the plan.
+        inset_scale: Linear scale factor for inset figure size.
+        inset_text_scale: Scale factor for inset text sizes.
 
     Returns:
         Path to the saved plan figure.
@@ -555,6 +681,45 @@ def plot_transect_location_plan(
     plt.show()
     plt.close(fig)
     print(f"Saved transect plan to: {plan_path}")
+
+    if make_inset:
+        inset_figsize = (9 * inset_scale, 7 * inset_scale)
+        fig, ax = plt.subplots(figsize=inset_figsize)
+        levels = np.arange(-10.0, 5.01, 0.2)
+        cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
+        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+        ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
+        ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
+
+        ax.set_aspect("equal", adjustable="box")
+        base_size = float(plt.rcParams.get("font.size", 10.0))
+        inset_size = base_size * inset_text_scale
+        ax.set_xlabel("Easting [km]", fontsize=inset_size, fontproperties=font)
+        ax.set_ylabel("Northing [km]", fontsize=inset_size, fontproperties=font)
+        ax.set_title("Transect Locations (Latest Bathymetry)", fontsize=inset_size, fontproperties=font)
+        ax.grid(True, color="0.5", alpha=0.4)
+        ax.set_axisbelow(False)
+        ax.tick_params(labelsize=inset_size * 0.9)
+
+        cb = fig.colorbar(cf, ax=ax)
+        cb.set_label("Depth [m]", fontsize=inset_size, fontproperties=font)
+        for tick in cb.ax.get_yticklabels():
+            tick.set_fontproperties(font)
+            tick.set_fontsize(inset_size * 0.9)
+
+        tick_spacing_km = tick_spacing_m / 1000.0
+        for (x1, y1, x2, y2), label in zip(transect_rows_km, labels):
+            ax.plot([x1, x2], [y1, y2], "-k", linewidth=1.0)
+            _plot_transect_ticks(ax, x1, y1, x2, y2, tick_spacing_km, tick_length_km)
+            ax.scatter([x1, x2], [y1, y2], s=20, c="w", edgecolors="k", zorder=3)
+            ax.text(x1 - 0.03, y1 + 0.03, label, fontproperties=font, fontsize=inset_size, color="k")
+            ax.text(x2 + 0.03, y2 - 0.03, f"{label}'", fontproperties=font, fontsize=inset_size, color="k")
+
+        inset_path = plan_dir / "transect_location_plan_inset.png"
+        fig.savefig(inset_path, dpi=300, bbox_inches="tight")
+        plt.show()
+        plt.close(fig)
+        print(f"Saved inset transect plan to: {inset_path}")
     return plan_path
 
 
@@ -605,6 +770,9 @@ def plot_transect_location_plan_from_transects(
     tick_length_km: float = 0.02,
     cmap_name: str = "kg2",
     map_output_name: str = "transect_location_plan_shapefiles.png",
+    make_inset: bool = False,
+    inset_scale: float = 0.5,
+    inset_text_scale: float = 1.4,
 ) -> Path:
     """Plot transect polylines on the latest bathymetry surface.
 
@@ -618,6 +786,9 @@ def plot_transect_location_plan_from_transects(
         tick_length_km: Tick length for transect tick marks (km).
         cmap_name: Colormap name for bathymetry rendering.
         map_output_name: Filename for the saved map.
+        make_inset: Whether to save a smaller inset version of the plan.
+        inset_scale: Linear scale factor for inset figure size.
+        inset_text_scale: Scale factor for inset text sizes.
 
     Returns:
         Path to the saved plan figure.
@@ -668,6 +839,48 @@ def plot_transect_location_plan_from_transects(
     plt.show()
     plt.close(fig)
     print(f"Saved transect plan to: {map_path}")
+
+    if make_inset:
+        inset_figsize = (9 * inset_scale, 7 * inset_scale)
+        fig, ax = plt.subplots(figsize=inset_figsize)
+        levels = np.arange(-10.0, 5.01, 0.2)
+        cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
+        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+        ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
+        ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
+
+        ax.set_aspect("equal", adjustable="box")
+        base_size = float(plt.rcParams.get("font.size", 10.0))
+        inset_size = base_size * inset_text_scale
+        ax.set_xlabel("Easting [km]", fontsize=inset_size, fontproperties=font)
+        ax.set_ylabel("Northing [km]", fontsize=inset_size, fontproperties=font)
+        ax.set_title("Transect Locations (Latest Bathymetry)", fontsize=inset_size, fontproperties=font)
+        ax.grid(True, color="0.5", alpha=0.4)
+        ax.set_axisbelow(False)
+        ax.tick_params(labelsize=inset_size * 0.9)
+
+        cb = fig.colorbar(cf, ax=ax)
+        cb.set_label("Depth [m]", fontsize=inset_size, fontproperties=font)
+        for tick in cb.ax.get_yticklabels():
+            tick.set_fontproperties(font)
+            tick.set_fontsize(inset_size * 0.9)
+
+        tick_spacing_km = tick_spacing_m / 1000.0
+        for transect, label in zip(transects, labels):
+            x_line = np.asarray(transect.x, dtype=float) / 1000.0
+            y_line = np.asarray(transect.y, dtype=float) / 1000.0
+            ax.plot(x_line, y_line, "-k", linewidth=1.0)
+            _plot_ticks_along_polyline(ax, x_line, y_line, tick_spacing_km, tick_length_km)
+            ax.scatter([x_line[0], x_line[-1]], [y_line[0], y_line[-1]], s=20, c="w", edgecolors="k", zorder=3)
+            ax.text(x_line[0] - 0.03, y_line[0] + 0.03, label, fontproperties=font, fontsize=inset_size, color="k")
+            ax.text(x_line[-1] + 0.03, y_line[-1] - 0.03, f"{label}'", fontproperties=font, fontsize=inset_size, color="k")
+
+        inset_name = map_output_name.replace(".png", "_inset.png")
+        inset_path = map_dir / inset_name
+        fig.savefig(inset_path, dpi=300, bbox_inches="tight")
+        plt.show()
+        plt.close(fig)
+        print(f"Saved inset transect plan to: {inset_path}")
     return map_path
 
 
