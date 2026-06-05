@@ -10,6 +10,7 @@ from bathymetry_analysis.stratigraphy import (
     BathyCube,
     StratigraphyConfig,
     Transect,
+    _resolve_time_axis,
     compute_stratigraphy,
     plot_cross_sections,
 )
@@ -75,3 +76,14 @@ def test_plot_cross_sections_writes_visible_png(tmp_path: Path) -> None:
     pngs = list(tmp_path.glob("Cross-section T1-T1'.png"))
     assert len(pngs) == 1
     assert pngs[0].stat().st_size > 0
+
+
+def test_resolve_time_axis_scales_elapsed_time_units() -> None:
+    """Short model runs use hours while long survey records use years."""
+    hours_axis, hours_label = _resolve_time_axis(np.array([738000.0, 738000.25]), nt=2, start_at_zero=True)
+    years_axis, years_label = _resolve_time_axis(np.array([738000.0, 745300.0]), nt=2, start_at_zero=True)
+
+    np.testing.assert_allclose(hours_axis, [0.0, 6.0])
+    assert hours_label == "Hours since start"
+    assert years_axis[1] > 19.0
+    assert years_label == "Years since start"

@@ -49,6 +49,10 @@ from .morphodynamic_analysis import (
     run_morphodynamic_analysis,
     save_morphodynamic_csv,
 )
+from .xbeach import (
+    load_xbeach_bathy_cube,
+    median_grid_spacing,
+)
 from .workflows import (
     run_morpho_wave_correlations,
     run_morphodynamics_vs_wave_power,
@@ -101,6 +105,8 @@ __all__ = [
     "plot_volume_timeseries",
     "run_morphodynamic_analysis",
     "save_morphodynamic_csv",
+    "load_xbeach_bathy_cube",
+    "median_grid_spacing",
     "run_morpho_wave_correlations",
     "run_morphodynamics_vs_wave_power",
     "run_shapefile_transect_plots",

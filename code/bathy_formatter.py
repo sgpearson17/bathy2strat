@@ -27,34 +27,12 @@ from scipy.spatial import ConvexHull
 from scipy.spatial import Delaunay
 from scipy.spatial import KDTree
 
+from utils.colormaps import bathymetry_colormap
+
 
 MHW = 0.358
 MSL = -0.112
 MLW = -0.590
-
-
-KG2_SGP_CLR = [
-    (0.0000, (0, 67, 143)),
-    (0.3333, (13, 182, 255)),
-    (0.5000, (255, 255, 255)),
-    (0.6000, (199, 181, 181)),
-    (0.7333, (158, 144, 144)),
-    (0.7667, (29, 89, 74)),
-    (1.0000, (29, 89, 74)),
-]
-
-VINTAGE_SGP_CLR = [
-    (0.0000, (27, 126, 129)),
-    (0.1333, (41, 155, 151)),
-    (0.2667, (56, 170, 164)),
-    (0.4000, (130, 199, 180)),
-    (0.5000, (220, 231, 194)),
-    (0.5667, (255, 240, 196)),
-    (0.6267, (244, 214, 176)),
-    (0.6667, (217, 188, 146)),
-    (0.7133, (255, 221, 146)),
-    (1.0000, (226, 129, 61)),
-]
 
 
 @dataclass
@@ -236,7 +214,7 @@ def load_clrmap_file(clrmap_path: str | Path) -> LinearSegmentedColormap:
 def get_named_colormap(name: str, cmap_file: str | Path | None = None):
     """Get plotting colormap by name or custom .clrmap file.
 
-    :param name: Colormap name (kg2, vintage, turbo, viridis).
+    :param name: Colormap name (SEAWAD, kg2 alias, Vintage, turbo, viridis).
     :param cmap_file: Optional .clrmap file path.
     :returns: Matplotlib colormap.
     :raises ValueError: If the name is unsupported.
@@ -245,15 +223,39 @@ def get_named_colormap(name: str, cmap_file: str | Path | None = None):
         return load_clrmap_file(cmap_file)
 
     key = name.lower()
-    if key == "kg2":
-        return _clr_stops_to_cmap(KG2_SGP_CLR, "kg2_sgp")
+    if key in {"seawad", "kg2"}:
+        cmap, _norm = bathymetry_colormap("SEAWAD")
+        return cmap
     if key == "vintage":
-        return _clr_stops_to_cmap(VINTAGE_SGP_CLR, "vintage_sgp")
+        cmap, _norm = bathymetry_colormap("Vintage")
+        return cmap
     if key == "turbo":
         return plt.get_cmap("turbo")
     if key == "viridis":
         return plt.get_cmap("viridis")
-    raise ValueError("Unsupported colormap name. Choose from: kg2, vintage, turbo, viridis")
+    raise ValueError("Unsupported colormap name. Choose from: SEAWAD, kg2, Vintage, turbo, viridis")
+
+
+def get_named_colormap_with_norm(name: str, cmap_file: str | Path | None = None):
+    """Get a named colormap and optional normalization."""
+    if cmap_file is not None:
+        return load_clrmap_file(cmap_file), None
+
+    key = name.lower()
+    if key in {"seawad", "kg2"}:
+        return bathymetry_colormap("SEAWAD")
+    if key == "vintage":
+        return bathymetry_colormap("Vintage")
+    return get_named_colormap(name), None
+
+
+def _bathy_levels_from_norm(norm, fallback: tuple[float, float] = (-20.0, 10.0), step: float = 0.2) -> np.ndarray:
+    """Return contour levels from a bathymetry normalization."""
+    vmin = getattr(norm, "vmin", None)
+    vmax = getattr(norm, "vmax", None)
+    if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin, vmax = fallback
+    return np.arange(float(vmin), float(vmax) + 0.5 * step, step)
 
 
 def load_raw_surveys(nc_dir: str | Path) -> list[RawSurvey]:
@@ -518,6 +520,7 @@ def plot_raw_surveys(
     y_lims: np.ndarray,
     out_dir: str | Path,
     bathy_cmap,
+    bathy_norm=None,
     overlap_mask: np.ndarray | None = None,
     overlap_x: np.ndarray | None = None,
     overlap_y: np.ndarray | None = None,
@@ -530,6 +533,7 @@ def plot_raw_surveys(
     :param y_lims: Plot y limits in km.
     :param out_dir: Output directory for images.
     :param bathy_cmap: Colormap for bathymetry.
+    :param bathy_norm: Optional bathymetry normalization.
     :param overlap_mask: Optional overlap mask to outline on plots.
     :param overlap_x: X grid (meters) matching overlap_mask.
     :param overlap_y: Y grid (meters) matching overlap_mask.
@@ -540,9 +544,17 @@ def plot_raw_surveys(
 
     for s in surveys:
         fig, ax = plt.subplots(figsize=(12, 8))
-        levels = np.arange(-30, 5.2, 0.2)
+        levels = _bathy_levels_from_norm(bathy_norm)
         z_plot = np.ma.masked_where(np.isnan(s.z_raw), s.z_raw) if mask_nan else s.z_raw
-        cf = ax.contourf(s.x_raw / 1000.0, s.y_raw / 1000.0, z_plot, levels=levels, cmap=bathy_cmap)
+        cf = ax.contourf(
+            s.x_raw / 1000.0,
+            s.y_raw / 1000.0,
+            z_plot,
+            levels=levels,
+            cmap=bathy_cmap,
+            norm=bathy_norm,
+            extend="both",
+        )
         ax.contour(s.x_raw / 1000.0, s.y_raw / 1000.0, s.z_raw, levels=[MLW], colors=[(0.5, 0.5, 0.5)], linewidths=1.0)
         ax.contour(s.x_raw / 1000.0, s.y_raw / 1000.0, s.z_raw, levels=[-6], colors="k", linestyles=":", linewidths=0.5)
 
@@ -564,8 +576,6 @@ def plot_raw_surveys(
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim((float(x_lims[0]), float(x_lims[1])))
         ax.set_ylim((float(y_lims[0]), float(y_lims[1])))
-        cf.set_clim(-10, 5)
-
         cbar = fig.colorbar(cf, ax=ax)
         cbar.set_label("Elevation [m NAVD88]")
 
@@ -1128,6 +1138,7 @@ def plot_regridded_surveys(
     raw_surveys: list[RawSurvey] | None,
     out_dir: str | Path,
     bathy_cmap,
+    bathy_norm=None,
     extent_boundary_method: str = "mask",
     overlap_mask: np.ndarray | None = None,
     mask_nan: bool = True,
@@ -1138,6 +1149,7 @@ def plot_regridded_surveys(
     :param raw_surveys: Optional raw surveys for masking logic.
     :param out_dir: Output directory for images.
     :param bathy_cmap: Colormap for bathymetry.
+    :param bathy_norm: Optional bathymetry normalization.
     :param extent_boundary_method: "mask" or "convex" outline method.
     :param overlap_mask: Optional overlap mask to outline.
     :param mask_nan: If True, mask NaN values in plots.
@@ -1181,7 +1193,7 @@ def plot_regridded_surveys(
     for i in range(t_vals.size):
         fig, ax = plt.subplots(figsize=(11.4, 7.9))
 
-        levels = np.arange(-30, 5.2, 0.2)
+        levels = _bathy_levels_from_norm(bathy_norm)
         z_data = bathy.z[:, :, i]
 
         if method_key == "mask":
@@ -1214,7 +1226,15 @@ def plot_regridded_surveys(
         else:
             z_plot = np.ma.masked_where(outside_mask, z_data)
 
-        cf = ax.contourf(bathy.x / 1000.0, bathy.y / 1000.0, z_plot, levels=levels, cmap=bathy_cmap)
+        cf = ax.contourf(
+            bathy.x / 1000.0,
+            bathy.y / 1000.0,
+            z_plot,
+            levels=levels,
+            cmap=bathy_cmap,
+            norm=bathy_norm,
+            extend="both",
+        )
         z_contour = np.ma.masked_where(outside_mask | np.isnan(z_data), z_data)
         ax.contour(bathy.x / 1000.0, bathy.y / 1000.0, z_contour, levels=[MLW], colors=[(0.5, 0.5, 0.5)], linewidths=1.0)
         ax.contour(bathy.x / 1000.0, bathy.y / 1000.0, z_contour, levels=[-6], colors="k", linestyles=":", linewidths=0.5)
@@ -1245,8 +1265,6 @@ def plot_regridded_surveys(
         ax.set_yticklabels([])
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
-        cf.set_clim(-10, 5)
-
         fig.tight_layout()
         if have_raw:
             y_raw, m_raw = _datenum_to_year_month(raw_seq[i].datenum)
@@ -1270,7 +1288,7 @@ def run_bathy_formatter(
     boundary_tightness: float = 3.0,
     overlap_erosion_cells: int = 0,
     output_format: str = "netcdf",
-    bathy_cmap_name: str = "kg2",
+    bathy_cmap_name: str = "SEAWAD",
     bathy_cmap_file: str | Path | None = None,
     extents_cmap_name: str = "viridis",
     extents_cmap_file: str | Path | None = None,
@@ -1432,7 +1450,7 @@ def process_bathy_formatter(
 def plot_bathy_formatter_outputs(
     process_result: BathyProcessResult | str | Path,
     plot_dir: str | Path,
-    bathy_cmap_name: str = "kg2",
+    bathy_cmap_name: str = "SEAWAD",
     bathy_cmap_file: str | Path | None = None,
     extents_cmap_name: str = "viridis",
     extents_cmap_file: str | Path | None = None,
@@ -1465,7 +1483,7 @@ def plot_bathy_formatter_outputs(
     _ensure_dir(plot_path / "regridded")
 
     extents_cmap = get_named_colormap(extents_cmap_name, extents_cmap_file)
-    bathy_cmap = get_named_colormap(bathy_cmap_name, bathy_cmap_file)
+    bathy_cmap, bathy_norm = get_named_colormap_with_norm(bathy_cmap_name, bathy_cmap_file)
 
     overlap_mask = None
     x_lims_all = None
@@ -1488,6 +1506,7 @@ def plot_bathy_formatter_outputs(
             y_lims_all,
             plot_path / "raw",
             bathy_cmap,
+            bathy_norm=bathy_norm,
             overlap_mask=overlap_mask,
             overlap_x=process_result.bathy.x,
             overlap_y=process_result.bathy.y,
@@ -1501,6 +1520,7 @@ def plot_bathy_formatter_outputs(
         process_result.surveys_processed,
         plot_path / "regridded",
         bathy_cmap,
+        bathy_norm=bathy_norm,
         extent_boundary_method=extent_boundary_method,
         overlap_mask=overlap_mask,
         mask_nan=mask_nan_plots,
@@ -1556,9 +1576,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--bathy-cmap",
-        choices=["kg2", "vintage", "turbo", "viridis"],
-        default="kg2",
-        help="Colormap for raw/regridded bathy plots (default: kg2).",
+        choices=["SEAWAD", "kg2", "Vintage", "vintage", "turbo", "viridis"],
+        default="SEAWAD",
+        help="Colormap for raw/regridded bathy plots (default: SEAWAD).",
     )
     parser.add_argument(
         "--bathy-cmap-file",
@@ -1567,7 +1587,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--extents-cmap",
-        choices=["kg2", "vintage", "turbo", "viridis"],
+        choices=["SEAWAD", "kg2", "Vintage", "vintage", "turbo", "viridis"],
         default="viridis",
         help="Colormap for extents plot and year colorbar (default: viridis).",
     )

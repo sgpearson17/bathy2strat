@@ -53,7 +53,7 @@ def test_plot_bathy_formatter_outputs_from_file_path(tmp_path: Path, capsys: pyt
     plot_bathy_formatter_outputs(
         process_result=data_path,
         plot_dir=plot_dir,
-        bathy_cmap_name="kg2",
+        bathy_cmap_name="SEAWAD",
         extent_boundary_method="mask",
         mask_nan_plots=True,
     )

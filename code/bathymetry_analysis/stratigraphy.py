@@ -160,11 +160,17 @@ def _datenum_to_years(t_vals: np.ndarray) -> np.ndarray:
 def _resolve_time_axis(t_vals: np.ndarray | None, nt: int, start_at_zero: bool) -> tuple[np.ndarray, str]:
     if t_vals is None:
         time = np.arange(nt, dtype=float)
-        label = "Years since start" if start_at_zero else "Year"
+        label = "Time step since start" if start_at_zero else "Time step"
         return time, label
 
     years = _datenum_to_years(t_vals)
     if start_at_zero:
+        t_days = np.asarray(t_vals, dtype=float).reshape(-1) - float(np.asarray(t_vals, dtype=float).reshape(-1)[0])
+        duration_days = float(np.nanmax(t_days)) if t_days.size else 0.0
+        if duration_days <= 2.0:
+            return t_days * 24.0, "Hours since start"
+        if duration_days <= 365.0 * 3.0:
+            return t_days, "Days since start"
         return years - years[0], "Years since start"
     return years, "Year"
 
@@ -373,18 +379,20 @@ def plot_stratigraphy_stack(
     axes_bottom[2].set_xlabel(time_label, fontproperties=font)
     axes_bottom[2].set_ylabel("Fraction of initial", fontproperties=font)
     ratio_min = np.nanmin(ratio)
-    if np.isfinite(ratio_min):
+    if np.isfinite(ratio_min) and ratio_min < 1.0:
         axes_bottom[2].set_ylim(ratio_min, 1.0)
     else:
         axes_bottom[2].set_ylim(0.0, 1.0)
     time_max = np.nanmax(time_axis)
     if np.isfinite(time_max):
         if start_year_at_zero:
-            axes_bottom[2].set_xlim(0.0, time_max)
+            time_limits = (0.0, time_max if time_max > 0.0 else 1.0)
         else:
             time_min = np.nanmin(time_axis)
-            if np.isfinite(time_min):
-                axes_bottom[2].set_xlim(time_min, time_max)
+            time_limits = (time_min, time_max) if np.isfinite(time_min) and time_max > time_min else None
+        if time_limits is not None:
+            for ax in axes_bottom:
+                ax.set_xlim(time_limits)
     axes_bottom[2].grid(True, alpha=0.3)
 
     # if show_water_labels:
@@ -1247,32 +1255,32 @@ def plot_theseus_ratio(result: StratigraphyResult, out_path: str | Path) -> None
     :param result: Stratigraphy results.
     :param out_path: Output image path.
     """
-    t_dt = datenum_to_datetime64(result.t)
+    time_axis, time_label = _resolve_time_axis(result.t, len(result.t), start_at_zero=True)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
     font = _get_plot_font()
 
     for tt in range(result.theseus_ratio.shape[0]):
         y = result.theseus_ratio[tt, tt:]
-        x = t_dt[tt:]
+        x = time_axis[tt:]
         valid = np.isfinite(y)
         if np.any(valid):
             ax1.plot(x[valid], y[valid], linewidth=1.0)
 
-    ax1.set_xlabel("Time", fontproperties=font)
+    ax1.set_xlabel(time_label, fontproperties=font)
     ax1.set_ylabel("Theta (Fraction Preserved) [-]", fontproperties=font)
     ax1.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
 
     for tt in range(result.theseus_ratio.shape[0]):
         y = result.theseus_ratio[tt, tt:]
-        x = (result.t[tt:] - result.t[tt]) / 10.0
+        x = time_axis[tt:] - time_axis[tt]
         valid = np.isfinite(y) & np.isfinite(x) & (x > 0) & (y > 0)
         if np.any(valid):
             ax2.plot(x[valid], y[valid], linewidth=1.0)
 
     ax2.set_xscale("log")
     ax2.set_yscale("log")
-    ax2.set_xlabel("Time", fontproperties=font)
+    ax2.set_xlabel(time_label, fontproperties=font)
     ax2.set_ylabel("Theta (Fraction Preserved) [-]", fontproperties=font)
     ax2.grid(True, color=(0.5, 0.5, 0.5), alpha=0.4)
     _apply_axes_font(ax1, font)

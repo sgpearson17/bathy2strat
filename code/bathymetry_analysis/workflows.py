@@ -16,10 +16,12 @@ import pandas as pd
 from scipy.interpolate import splprep, splev
 
 from utils.date_utils import interval_highlight_mask
+from utils.colormaps import bathymetry_colormap
 from bathy_formatter import get_named_colormap
 from .bathy import load_clrmap_file
 from .plot_style import apply_axes_font, apply_global_style, get_plot_font
 from .stratigraphy import (
+    BathyCube,
     StratigraphyConfig,
     Transect,
     compute_stratigraphy,
@@ -112,6 +114,32 @@ DEFAULT_X_VARS = {
     "cum_wave_power_below_MWh_m": "Wave power (Hs < 2.0 m) [MWh/m]",
     "period_days": "Interval duration [days]",
 }
+
+
+def _resolve_bathy_colormap(cmap_name: str):
+    """Resolve bathymetry colormap names from project and SedTRAILS palettes."""
+    if cmap_name.endswith(".clrmap"):
+        return load_clrmap_file(cmap_name), None
+    try:
+        return bathymetry_colormap(cmap_name)
+    except ValueError:
+        return get_named_colormap(cmap_name), None
+
+
+def _bathy_contour_levels(norm, fallback: tuple[float, float] = (-20.0, 10.0), step: float = 0.2) -> np.ndarray:
+    """Return contour levels matching a bathymetry colormap normalization."""
+    vmin = getattr(norm, "vmin", None)
+    vmax = getattr(norm, "vmax", None)
+    if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin, vmax = fallback
+    return np.arange(float(vmin), float(vmax) + 0.5 * step, step)
+
+
+def _coerce_bathy_cube(source: str | Path | BathyCube) -> BathyCube:
+    """Return a BathyCube from a path or an already-converted cube."""
+    if isinstance(source, BathyCube):
+        return source
+    return load_bathy_cube(source)
 
 
 def _label_for_index(index: int) -> str:
@@ -285,7 +313,7 @@ def _write_stratigraphy_gif(
 
 
 def run_transect_slice_plots(
-    bathy_nc_path: str | Path,
+    bathy_nc_path: str | Path | BathyCube,
     output_root: str | Path,
     transect_rows_km: np.ndarray,
     tick_spacing_m: float = 100.0,
@@ -294,10 +322,14 @@ def run_transect_slice_plots(
     highlight_date: str | np.datetime64 | list[str | np.datetime64] | None = None,
     n_points: int = 400,
     initial_index: int = 0,
-    dx: float = 20.0,
+    dx: float | None = 20.0,
     target_crs: str = "EPSG:32618",
     max_fig_width_cm: float = 20.0,
     max_fig_height_cm: float = 5.0,
+    plot_xlim: tuple[float, float] | None = None,
+    plot_ylim: tuple[float, float] | None = None,
+    clip_x_to_data: bool = True,
+    clip_y_to_data: bool = True,
     make_gif: bool = False,
     gif_fps: int = 6,
     gif_stride: int = 1,
@@ -305,7 +337,7 @@ def run_transect_slice_plots(
     """Plot 6-panel stratigraphy summaries for a list of transect slices.
 
     Args:
-        bathy_nc_path: Path to the bathymetry cube netCDF file.
+        bathy_nc_path: Path to a bathymetry cube file or an already-converted BathyCube.
         output_root: Output root directory for plots.
         transect_rows_km: Array of transect endpoints in kilometers.
         tick_spacing_m: Tick spacing along transects (meters).
@@ -314,10 +346,14 @@ def run_transect_slice_plots(
         highlight_date: Optional date string(s) or datetime64(s) to highlight deposits.
         n_points: Number of points used for each transect slice.
         initial_index: Initial stratigraphy index.
-        dx: Grid spacing in meters.
+        dx: Grid spacing in meters. If None, use each extracted transect's sample spacing.
         target_crs: CRS string for plot metadata.
         max_fig_width_cm: Maximum plot width for scaled sections (cm).
         max_fig_height_cm: Maximum plot height for scaled sections (cm).
+        plot_xlim: Optional x-axis limits for section plots in along-transect meters.
+        plot_ylim: Optional elevation limits for section plots in meters.
+        clip_x_to_data: Clip section x-limits to data extent when plot_xlim is not provided.
+        clip_y_to_data: Clip section y-limits to data extent when plot_ylim is not provided.
         make_gif: Whether to create a stratigraphy GIF for each transect.
         gif_fps: Frames per second for GIF export.
         gif_stride: Step between frames (e.g., 2 uses every other survey).
@@ -327,8 +363,7 @@ def run_transect_slice_plots(
     """
     labels = [_label_for_index(i) for i in range(len(transect_rows_km))]
     output_root = Path(output_root)
-    bathy_cube = load_bathy_cube(bathy_nc_path)
-    slice_cfg = StratigraphyConfig(initial_index=initial_index, dx=dx, target_crs=target_crs)
+    bathy_cube = _coerce_bathy_cube(bathy_nc_path)
     slice_dir = output_root / "plots" / "python" / "stratigraphy" / "transect_slice"
     slice_dir.mkdir(parents=True, exist_ok=True)
 
@@ -344,17 +379,20 @@ def run_transect_slice_plots(
         transect = Transect(name=f"{label}", x=coords_m[:, 0], y=coords_m[:, 1])
 
         slice_cube = extract_transect_cube(bathy_cube, transect, n_points=n_points, name=transect.name)
+        slice_dx = float(dx) if dx is not None else float(np.nanmedian(np.diff(slice_cube.x[0, :])))
+        slice_cfg = StratigraphyConfig(initial_index=initial_index, dx=slice_dx, target_crs=target_crs)
         slice_result = compute_stratigraphy(slice_cube, slice_cfg)
 
         z_min = min(z_min, np.nanmin(slice_cube.z))
         z_max = max(z_max, np.nanmax(slice_cube.z))
         entries.append((label, transect, slice_cube, slice_result, length_m))
 
-    plot_ylim = None
+    resolved_plot_ylim = plot_ylim
     max_depth_range = None
-    if np.isfinite(z_min) and np.isfinite(z_max) and z_max > z_min:
-        plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
-        max_depth_range = plot_ylim[1] - plot_ylim[0]
+    if resolved_plot_ylim is None and np.isfinite(z_min) and np.isfinite(z_max) and z_max > z_min:
+        resolved_plot_ylim = (z_min - 0.01 * abs(z_min), z_max + 0.01 * abs(z_max))
+    if resolved_plot_ylim is not None:
+        max_depth_range = resolved_plot_ylim[1] - resolved_plot_ylim[0]
 
     highlight_dates = _normalize_highlight_dates(highlight_date)
 
@@ -369,14 +407,16 @@ def run_transect_slice_plots(
                 slice_dir / f"strat_overview_section_{transect.name}.png",
                 f"overview_{label}",
                 time_vals=slice_cube.t,
+                plot_xlim=plot_xlim,
+                plot_ylim=resolved_plot_ylim,
                 title_prefix=section_title,
             )
             plot_stacked_stratigraphy_section(
                 slice_cube,
                 slice_dir / f"strat_section_{label}.png",
                 f"Cross-section {label}-{label}'",
-                plot_xlim=None,
-                plot_ylim=plot_ylim,
+                plot_xlim=plot_xlim,
+                plot_ylim=resolved_plot_ylim,
                 x_ticks=xticks_m,
                 mhw=mhw,
                 mlw=mlw,
@@ -385,8 +425,8 @@ def run_transect_slice_plots(
                 max_depth_range=max_depth_range,
                 max_fig_width_cm=max_fig_width_cm,
                 max_fig_height_cm=max_fig_height_cm,
-                clip_x_to_data=True,
-                clip_y_to_data=True,
+                clip_x_to_data=clip_x_to_data,
+                clip_y_to_data=clip_y_to_data,
             )
         else:
             for date_val in highlight_dates:
@@ -400,6 +440,8 @@ def run_transect_slice_plots(
                     slice_highlight_dir / f"strat_{transect.name}_highlight_{highlight_tag}.png",
                     f"overview_slice_{label}",
                     time_vals=slice_cube.t,
+                    plot_xlim=plot_xlim,
+                    plot_ylim=resolved_plot_ylim,
                     highlight_date=date_val,
                     title_prefix=section_title,
                 )
@@ -407,8 +449,8 @@ def run_transect_slice_plots(
                     slice_cube,
                     slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
                     f"Cross-section {label}-{label}'",
-                    plot_xlim=None,
-                    plot_ylim=plot_ylim,
+                    plot_xlim=plot_xlim,
+                    plot_ylim=resolved_plot_ylim,
                     x_ticks=xticks_m,
                     mhw=mhw,
                     mlw=mlw,
@@ -417,8 +459,8 @@ def run_transect_slice_plots(
                     max_depth_range=max_depth_range,
                     max_fig_width_cm=max_fig_width_cm,
                     max_fig_height_cm=max_fig_height_cm,
-                    clip_x_to_data=True,
-                    clip_y_to_data=True,
+                    clip_x_to_data=clip_x_to_data,
+                    clip_y_to_data=clip_y_to_data,
                 )
 
         if make_gif:
@@ -430,7 +472,7 @@ def run_transect_slice_plots(
                     section_title,
                     mhw=mhw,
                     mlw=mlw,
-                    plot_ylim=plot_ylim,
+                    plot_ylim=resolved_plot_ylim,
                     highlight_dates=None,
                     max_transect_length=max_len_m,
                     max_depth_range=max_depth_range,
@@ -452,7 +494,7 @@ def run_transect_slice_plots(
                         section_title,
                         mhw=mhw,
                         mlw=mlw,
-                        plot_ylim=plot_ylim,
+                        plot_ylim=resolved_plot_ylim,
                         highlight_dates=[date_val],
                         max_transect_length=max_len_m,
                         max_depth_range=max_depth_range,
@@ -595,7 +637,7 @@ def plot_transect_location_plan(
     mlw: float = 0.0,
     tick_spacing_m: float = 100.0,
     tick_length_km: float = 0.02,
-    cmap_name: str = "kg2",
+    cmap_name: str = "SEAWAD",
     make_inset: bool = False,
     inset_scale: float = 0.5,
     inset_text_scale: float = 1.4,
@@ -647,9 +689,9 @@ def plot_transect_location_plan(
     z_last = bathy_cube.z[:, :, -1]
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    levels = np.arange(-10.0, 5.01, 0.2)
-    cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
-    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+    cmap, norm = _resolve_bathy_colormap(cmap_name)
+    levels = _bathy_contour_levels(norm)
+    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, norm=norm, extend="both")
     ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
     ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
 
@@ -685,9 +727,9 @@ def plot_transect_location_plan(
     if make_inset:
         inset_figsize = (9 * inset_scale, 7 * inset_scale)
         fig, ax = plt.subplots(figsize=inset_figsize)
-        levels = np.arange(-10.0, 5.01, 0.2)
-        cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
-        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+        cmap, norm = _resolve_bathy_colormap(cmap_name)
+        levels = _bathy_contour_levels(norm)
+        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, norm=norm, extend="both")
         ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
         ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
 
@@ -768,7 +810,7 @@ def plot_transect_location_plan_from_transects(
     mlw: float = 0.0,
     tick_spacing_m: float = 100.0,
     tick_length_km: float = 0.02,
-    cmap_name: str = "kg2",
+    cmap_name: str = "SEAWAD",
     map_output_name: str = "transect_location_plan_shapefiles.png",
     make_inset: bool = False,
     inset_scale: float = 0.5,
@@ -803,9 +845,9 @@ def plot_transect_location_plan_from_transects(
     z_last = bathy_cube.z[:, :, -1]
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    levels = np.arange(-10.0, 5.01, 0.2)
-    cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
-    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+    cmap, norm = _resolve_bathy_colormap(cmap_name)
+    levels = _bathy_contour_levels(norm)
+    cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, norm=norm, extend="both")
     ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
     ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
 
@@ -843,9 +885,9 @@ def plot_transect_location_plan_from_transects(
     if make_inset:
         inset_figsize = (9 * inset_scale, 7 * inset_scale)
         fig, ax = plt.subplots(figsize=inset_figsize)
-        levels = np.arange(-10.0, 5.01, 0.2)
-        cmap = get_named_colormap(cmap_name) if not cmap_name.endswith(".clrmap") else load_clrmap_file(cmap_name)
-        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, extend="both")
+        cmap, norm = _resolve_bathy_colormap(cmap_name)
+        levels = _bathy_contour_levels(norm)
+        cf = ax.contourf(x_km, y_km, z_last, levels=levels, cmap=cmap, norm=norm, extend="both")
         ax.contour(x_km, y_km, z_last, levels=[mlw], colors=["0.5"], linewidths=1.0)
         ax.contour(x_km, y_km, z_last, levels=[-6.0], colors="k", linestyles=":", linewidths=0.5)
 
@@ -1140,7 +1182,7 @@ def run_shapefile_transect_plots(
             mlw=mlw,
             tick_spacing_m=tick_spacing_m,
             tick_length_km=map_tick_length_km,
-            cmap_name="kg2",
+            cmap_name="SEAWAD",
             map_output_name=map_output_name,
         )
     else:
