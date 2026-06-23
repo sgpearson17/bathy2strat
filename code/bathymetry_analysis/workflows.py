@@ -35,6 +35,570 @@ from .stratigraphy import (
 )
 
 
+def _resolve_date_index(dates: np.ndarray, requested: str | np.datetime64) -> tuple[int, np.datetime64]:
+    """Resolve a requested date to the nearest available survey date at or after it."""
+    if dates.size == 0:
+        raise ValueError("No survey dates are available in the bathymetry cube")
+    requested_dt = np.datetime64(requested)
+    idx = int(np.searchsorted(dates, requested_dt, side="left"))
+    if idx >= dates.size:
+        idx = dates.size - 1
+    return idx, dates[idx]
+
+
+def _deposit_layer_thickness(result, layer_idx: int) -> np.ndarray:
+    """Return preserved thickness for a specific deposit layer index."""
+    layer_idx = int(layer_idx)
+    if layer_idx < 0 or layer_idx >= result.deposit_elev.shape[2]:
+        raise IndexError(f"Deposit layer index out of bounds: {layer_idx}")
+    if layer_idx == 0:
+        thickness = np.maximum(0.0, result.deposit_elev[:, :, 0] - result.min_surf)
+    else:
+        thickness = np.maximum(0.0, result.deposit_elev[:, :, layer_idx] - result.deposit_elev[:, :, layer_idx - 1])
+    valid = np.isfinite(result.deposit_elev[:, :, layer_idx])
+    return np.where(valid, thickness, np.nan)
+
+
+def _deposit_layer_thickness_stack(result) -> np.ndarray:
+    """Return preserved thickness stack for all deposit layers."""
+    dep = np.asarray(result.deposit_elev, dtype=float)
+    ny, nx, nt = dep.shape
+    thk = np.full((ny, nx, nt), np.nan, dtype=float)
+    if nt == 0:
+        return thk
+    thk[:, :, 0] = np.maximum(0.0, dep[:, :, 0] - np.asarray(result.min_surf, dtype=float))
+    for k in range(1, nt):
+        thk[:, :, k] = np.maximum(0.0, dep[:, :, k] - dep[:, :, k - 1])
+    valid = np.isfinite(dep)
+    return np.where(valid, thk, np.nan)
+
+
+def _auto_contour_levels(surface: np.ndarray, interval_m: float) -> np.ndarray:
+    """Build contour levels from a 2D surface using a target interval."""
+    valid = np.asarray(surface, dtype=float)
+    finite = np.isfinite(valid)
+    if not np.any(finite):
+        return np.array([-10.0, -5.0, 0.0, 5.0], dtype=float)
+
+    step = float(interval_m) if np.isfinite(interval_m) and interval_m > 0 else 1.0
+    zmin = float(np.nanmin(valid[finite]))
+    zmax = float(np.nanmax(valid[finite]))
+    lo = np.floor(zmin / step) * step
+    hi = np.ceil(zmax / step) * step
+    levels = np.arange(lo, hi + 0.5 * step, step, dtype=float)
+    if levels.size > 40:
+        stride = int(np.ceil(levels.size / 40.0))
+        levels = levels[::stride]
+    if levels.size < 2:
+        levels = np.array([lo, lo + step], dtype=float)
+    return levels
+
+
+def _nice_age_levels(*maps: np.ndarray, target_bins: int = 8) -> np.ndarray:
+    """Build rounded age color levels shared across one or more maps."""
+    max_age = 0.0
+    for arr in maps:
+        if arr is None:
+            continue
+        if np.any(np.isfinite(arr)):
+            max_age = max(max_age, float(np.nanmax(arr)))
+
+    if not np.isfinite(max_age) or max_age <= 0.0:
+        return np.array([0.0, 1.0], dtype=float)
+
+    raw_step = max_age / max(float(target_bins), 1.0)
+    magnitude = 10.0 ** np.floor(np.log10(raw_step))
+    scaled = raw_step / magnitude
+    for m in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if scaled <= m:
+            step = m * magnitude
+            break
+    else:
+        step = 10.0 * magnitude
+
+    upper = np.ceil(max_age / step) * step
+    levels = np.arange(0.0, upper + 0.5 * step, step, dtype=float)
+    if levels.size < 2:
+        levels = np.array([0.0, step], dtype=float)
+    return levels
+
+
+def _year_fraction_from_datenum(t_vals: np.ndarray) -> np.ndarray:
+    """Convert MATLAB datenums to fractional calendar years."""
+    t_arr = np.asarray(t_vals, dtype=float).reshape(-1)
+    if t_arr.size == 0:
+        return np.array([], dtype=float)
+    t_dt = pd.DatetimeIndex(pd.to_datetime(datenum_to_datetime64(t_arr), errors="coerce"))
+    return t_dt.year.to_numpy(dtype=float) + (t_dt.dayofyear.to_numpy(dtype=float) - 1.0) / 365.25
+
+
+def _youngest_preserved_layer_index(thickness_stack: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    """Return index of youngest preserved layer per cell, or -1 where none exist."""
+    valid = np.isfinite(thickness_stack) & (thickness_stack > eps)
+    has = np.any(valid, axis=2)
+    rev_idx = np.argmax(valid[:, :, ::-1], axis=2)
+    nt = thickness_stack.shape[2]
+    out = (nt - 1 - rev_idx).astype(int)
+    out[~has] = -1
+    return out
+
+
+def _top_layer_average_age_map(
+    thickness_stack: np.ndarray,
+    layer_age_years: np.ndarray,
+    top_layer_thickness_m: float,
+    eps: float = 1e-9,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-cell average age of the top-thickness layer and used thickness."""
+    ny, nx, nt = thickness_stack.shape
+    age_map = np.full((ny, nx), np.nan, dtype=float)
+    used_thickness = np.zeros((ny, nx), dtype=float)
+    target = float(top_layer_thickness_m)
+    if not np.isfinite(target) or target <= 0.0:
+        return age_map, used_thickness
+
+    for iy in range(ny):
+        for ix in range(nx):
+            remaining = target
+            weighted = 0.0
+            used = 0.0
+            for k in range(nt - 1, -1, -1):
+                thk = thickness_stack[iy, ix, k]
+                if not np.isfinite(thk) or thk <= eps:
+                    continue
+                take = min(float(thk), remaining)
+                if take <= 0.0:
+                    continue
+                weighted += take * float(layer_age_years[k])
+                used += take
+                remaining -= take
+                if remaining <= eps:
+                    break
+            if used > eps:
+                age_map[iy, ix] = weighted / used
+                used_thickness[iy, ix] = used
+    return age_map, used_thickness
+
+
+def plot_highlight_deposit_thickness_maps(
+    bathy_source: str | Path | BathyCube,
+    output_root: str | Path,
+    highlight_dates: str | np.datetime64 | list[str | np.datetime64],
+    initial_index: int = 0,
+    dx: float = 20.0,
+    contour_interval_m: float = 1.0,
+    contour_levels: np.ndarray | list[float] | None = None,
+    thickness_cmap: str = "magma_r",
+) -> dict[str, object]:
+    """Plot local preserved deposit thickness maps for highlighted dates.
+
+    Args:
+        bathy_source: Bathymetry source path or already-loaded BathyCube.
+        output_root: Output root directory.
+        highlight_dates: One or more dates to map, one map per date.
+        initial_index: Baseline stratigraphy index.
+        dx: Grid spacing in meters.
+        contour_interval_m: Contour interval for latest bathymetry overlay.
+        contour_levels: Optional explicit contour levels (meters).
+        thickness_cmap: Colormap used for local preserved deposit thickness.
+
+    Returns:
+        Dict with output directory and per-date map metadata.
+    """
+    dates_to_plot = _normalize_highlight_dates(highlight_dates)
+    if not dates_to_plot:
+        raise ValueError("highlight_dates must include at least one date")
+
+    bathy = _coerce_bathy_cube(bathy_source)
+    config = StratigraphyConfig(initial_index=initial_index, dx=dx)
+    result = compute_stratigraphy(bathy, config)
+    survey_dates = datenum_to_datetime64(result.t)
+    latest_surface = np.asarray(bathy.z[:, :, -1], dtype=float)
+    contour_tag = str(survey_dates[-1])[:10] if survey_dates.size > 0 else "latest"
+
+    x_km = np.asarray(bathy.x, dtype=float) / 1000.0
+    y_km = np.asarray(bathy.y, dtype=float) / 1000.0
+
+    out_dir = Path(output_root) / "plots" / "python" / "stratigraphy" / "spatial_deposit_thickness"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if contour_levels is None:
+        levels = _auto_contour_levels(latest_surface, contour_interval_m)
+    else:
+        levels = np.asarray(contour_levels, dtype=float)
+        levels = levels[np.isfinite(levels)]
+        levels = np.unique(levels)
+        if levels.size < 2:
+            levels = _auto_contour_levels(latest_surface, contour_interval_m)
+
+    outputs: list[dict[str, object]] = []
+    for requested in dates_to_plot:
+        idx, resolved = _resolve_date_index(survey_dates, requested)
+        thk = _deposit_layer_thickness(result, idx)
+
+        vmax = float(np.nanmax(thk)) if np.any(np.isfinite(thk)) else 0.0
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 1.0
+        thk_levels = np.linspace(0.0, vmax, 21)
+
+        apply_global_style()
+        font = get_plot_font()
+        fig, ax = plt.subplots(figsize=(9.5, 7.5))
+        cf = ax.contourf(
+            x_km,
+            y_km,
+            thk,
+            levels=thk_levels,
+            cmap=thickness_cmap,
+            extend="max",
+        )
+        cs = ax.contour(
+            x_km,
+            y_km,
+            latest_surface,
+            levels=levels,
+            colors="k",
+            linewidths=0.55,
+            alpha=0.45,
+        )
+        if len(cs.levels) > 0:
+            ax.clabel(cs, cs.levels[::2], inline=True, fontsize=7, fmt="%.0f")
+
+        cb = fig.colorbar(cf, ax=ax)
+        cb.set_label("Preserved deposit thickness [m]", fontproperties=font)
+        for tick in cb.ax.get_yticklabels():
+            tick.set_fontproperties(font)
+
+        tag = str(resolved)[:10]
+        ax.set_title(f"Local preserved deposit thickness ({tag}) with {contour_tag} depth contours")
+        ax.set_xlabel("Easting [km]")
+        ax.set_ylabel("Northing [km]")
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, color="0.5", alpha=0.35)
+        apply_axes_font(ax, font)
+
+        file_path = out_dir / f"deposit_thickness_map_{tag}.png"
+        fig.tight_layout()
+        fig.savefig(file_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        outputs.append(
+            {
+                "requested_date": str(np.datetime64(requested))[:10],
+                "resolved_survey_date": tag,
+                "layer_index": int(idx),
+                "map_path": file_path,
+            }
+        )
+
+    return {
+        "output_dir": out_dir,
+        "maps": outputs,
+    }
+
+
+def plot_domain_surface_age_maps(
+    bathy_source: str | Path | BathyCube,
+    output_root: str | Path,
+    initial_index: int = 0,
+    dx: float = 20.0,
+    top_layer_thickness_m: float = 0.5,
+    contour_interval_m: float = 1.0,
+    contour_levels: np.ndarray | list[float] | None = None,
+    surface_age_cmap: str = "viridis_r",
+    top_layer_age_cmap: str | None = None,
+) -> dict[str, object]:
+    """Plot full-domain surface age and average age of the top layer.
+
+    Args:
+        bathy_source: Bathymetry source path or already-loaded BathyCube.
+        output_root: Output root directory.
+        initial_index: Baseline stratigraphy index.
+        dx: Grid spacing in meters.
+        top_layer_thickness_m: Thickness of the top layer used for average-age calculation.
+        contour_interval_m: Contour interval for latest bathymetry overlay.
+        contour_levels: Optional explicit contour levels (meters).
+        surface_age_cmap: Colormap for surface age map.
+        top_layer_age_cmap: Colormap for top-layer average age map (defaults to surface_age_cmap).
+
+    Returns:
+        Dict with figure paths and summary statistics.
+    """
+    bathy = _coerce_bathy_cube(bathy_source)
+    config = StratigraphyConfig(initial_index=initial_index, dx=dx)
+    result = compute_stratigraphy(bathy, config)
+
+    x_km = np.asarray(bathy.x, dtype=float) / 1000.0
+    y_km = np.asarray(bathy.y, dtype=float) / 1000.0
+    latest_surface = np.asarray(bathy.z[:, :, -1], dtype=float)
+
+    if contour_levels is None:
+        levels = _auto_contour_levels(latest_surface, contour_interval_m)
+    else:
+        levels = np.asarray(contour_levels, dtype=float)
+        levels = levels[np.isfinite(levels)]
+        levels = np.unique(levels)
+        if levels.size < 2:
+            levels = _auto_contour_levels(latest_surface, contour_interval_m)
+
+    survey_dates = datenum_to_datetime64(result.t)
+    contour_tag = str(survey_dates[-1])[:10] if survey_dates.size > 0 else "latest"
+    layer_year = _year_fraction_from_datenum(result.t)
+    if layer_year.size == 0:
+        raise ValueError("No survey dates available to compute age metrics")
+    latest_year = float(layer_year[-1])
+    layer_age_years = np.maximum(0.0, latest_year - layer_year)
+
+    thickness_stack = _deposit_layer_thickness_stack(result)
+    youngest_idx = _youngest_preserved_layer_index(thickness_stack)
+    surface_age_years = np.full(youngest_idx.shape, np.nan, dtype=float)
+    has_surface = youngest_idx >= 0
+    if np.any(has_surface):
+        surface_age_years[has_surface] = layer_age_years[youngest_idx[has_surface]]
+    surface_age_years = np.where(np.isfinite(latest_surface), surface_age_years, np.nan)
+
+    top_age_map, top_used_thickness = _top_layer_average_age_map(
+        thickness_stack,
+        layer_age_years,
+        top_layer_thickness_m=top_layer_thickness_m,
+    )
+    top_age_map = np.where(np.isfinite(latest_surface), top_age_map, np.nan)
+    domain_avg_top_age_years = float(np.nanmean(top_age_map)) if np.any(np.isfinite(top_age_map)) else np.nan
+
+    if top_layer_age_cmap is None:
+        top_layer_age_cmap = surface_age_cmap
+    age_levels = _nice_age_levels(surface_age_years, top_age_map)
+
+    apply_global_style()
+    font = get_plot_font()
+    fig, axes = plt.subplots(1, 2, figsize=(14.2, 6.0), constrained_layout=True)
+
+    # Surface age map.
+    ax = axes[0]
+    cf0 = ax.contourf(x_km, y_km, surface_age_years, levels=age_levels, cmap=surface_age_cmap, extend="max")
+    cs0 = ax.contour(x_km, y_km, latest_surface, levels=levels, colors="k", linewidths=0.55, alpha=0.45)
+    if len(cs0.levels) > 0:
+        ax.clabel(cs0, cs0.levels[::2], inline=True, fontsize=7, fmt="%.0f")
+    cb0 = fig.colorbar(cf0, ax=ax)
+    cb0.set_label("Surface age [years]", fontproperties=font)
+    for tick in cb0.ax.get_yticklabels():
+        tick.set_fontproperties(font)
+    ax.set_title(f"Surface age with {contour_tag} depth contours")
+    ax.set_xlabel("Easting [km]")
+    ax.set_ylabel("Northing [km]")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, color="0.5", alpha=0.35)
+    apply_axes_font(ax, font)
+
+    # Top-layer average age map.
+    ax = axes[1]
+    cf1 = ax.contourf(x_km, y_km, top_age_map, levels=age_levels, cmap=top_layer_age_cmap, extend="max")
+    cs1 = ax.contour(x_km, y_km, latest_surface, levels=levels, colors="k", linewidths=0.55, alpha=0.45)
+    if len(cs1.levels) > 0:
+        ax.clabel(cs1, cs1.levels[::2], inline=True, fontsize=7, fmt="%.0f")
+    cb1 = fig.colorbar(cf1, ax=ax)
+    cb1.set_label(f"Average age of top {top_layer_thickness_m:.2f} m [years]", fontproperties=font)
+    for tick in cb1.ax.get_yticklabels():
+        tick.set_fontproperties(font)
+    ax.set_title(f"Top-layer average age with {contour_tag} depth contours")
+    ax.set_xlabel("Easting [km]")
+    ax.set_ylabel("Northing [km]")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, color="0.5", alpha=0.35)
+    apply_axes_font(ax, font)
+
+    out_dir = Path(output_root) / "plots" / "python" / "stratigraphy" / "surface_age"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    map_path = out_dir / "surface_age_and_top_layer_age.png"
+    fig.savefig(map_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # Coverage map to show where requested top-layer thickness was available.
+    fig_cov, ax_cov = plt.subplots(1, 1, figsize=(7.1, 6.0), constrained_layout=True)
+    vmax_cov = max(float(top_layer_thickness_m), 1e-6)
+    lv_cov = np.linspace(0.0, vmax_cov, 21)
+    cfc = ax_cov.contourf(x_km, y_km, top_used_thickness, levels=lv_cov, cmap="Greys", extend="max")
+    csc = ax_cov.contour(x_km, y_km, latest_surface, levels=levels, colors="k", linewidths=0.55, alpha=0.45)
+    if len(csc.levels) > 0:
+        ax_cov.clabel(csc, csc.levels[::2], inline=True, fontsize=7, fmt="%.0f")
+    cbc = fig_cov.colorbar(cfc, ax=ax_cov)
+    cbc.set_label("Used top-layer thickness [m]", fontproperties=font)
+    for tick in cbc.ax.get_yticklabels():
+        tick.set_fontproperties(font)
+    ax_cov.set_title("Top-layer thickness used in age average")
+    ax_cov.set_xlabel("Easting [km]")
+    ax_cov.set_ylabel("Northing [km]")
+    ax_cov.set_aspect("equal", adjustable="box")
+    ax_cov.grid(True, color="0.5", alpha=0.35)
+    apply_axes_font(ax_cov, font)
+    coverage_path = out_dir / "top_layer_age_thickness_used.png"
+    fig_cov.savefig(coverage_path, dpi=300, bbox_inches="tight")
+    plt.close(fig_cov)
+
+    return {
+        "age_map_path": map_path,
+        "top_layer_coverage_path": coverage_path,
+        "output_dir": out_dir,
+        "top_layer_thickness_m": float(top_layer_thickness_m),
+        "domain_avg_top_age_years": domain_avg_top_age_years,
+        "surface_age_years": surface_age_years,
+        "top_layer_avg_age_years_map": top_age_map,
+        "top_layer_used_thickness_map": top_used_thickness,
+    }
+
+
+def _domain_time_axis_from_datenum(t_vals: np.ndarray, start_year_at_zero: bool) -> tuple[np.ndarray, str]:
+    """Return a plottable time axis and axis label from MATLAB datenums."""
+    t_arr = np.asarray(t_vals, dtype=float).reshape(-1)
+    if t_arr.size == 0:
+        return np.array([], dtype=float), "Time step"
+
+    t_dt = pd.DatetimeIndex(pd.to_datetime(datenum_to_datetime64(t_arr), errors="coerce"))
+    if start_year_at_zero:
+        delta_days = ((t_dt - t_dt[0]) / np.timedelta64(1, "D")).to_numpy(dtype=float)
+        return delta_days, "Time since first survey [days]"
+
+    year_frac = t_dt.year.to_numpy(dtype=float) + (t_dt.dayofyear.to_numpy(dtype=float) - 1.0) / 365.25
+    return year_frac, "Year"
+
+
+def plot_domain_preservation_metrics(
+    bathy_source: str | Path | BathyCube,
+    output_root: str | Path,
+    initial_index: int = 0,
+    dx: float = 20.0,
+    start_year_at_zero: bool = True,
+    highlight_date: str | np.datetime64 | None = None,
+) -> dict[str, object]:
+    """Plot full-domain preserved-volume metrics (absolute, normalized, and Theseus ratio).
+
+    Args:
+        bathy_source: Bathymetry source path or already-loaded BathyCube.
+        output_root: Output root directory.
+        initial_index: Baseline stratigraphy index.
+        dx: Grid spacing in meters.
+        start_year_at_zero: If True, x-axis is days since first survey.
+        highlight_date: Optional date to highlight in red.
+
+    Returns:
+        Dict containing output figure path and metadata.
+    """
+    bathy = _coerce_bathy_cube(bathy_source)
+    config = StratigraphyConfig(initial_index=initial_index, dx=dx)
+    result = compute_stratigraphy(bathy, config)
+
+    nt = int(result.deposit_per_year.shape[0])
+    time_axis, time_label = _domain_time_axis_from_datenum(result.t, start_year_at_zero)
+    if time_axis.size == 0:
+        time_axis = np.arange(nt, dtype=float)
+        time_label = "Time step"
+
+    survey_dates = datenum_to_datetime64(result.t)
+    highlight_idx = None
+    highlight_tag = None
+    if highlight_date is not None and survey_dates.size > 0:
+        idx, resolved = _resolve_date_index(survey_dates, highlight_date)
+        highlight_idx = int(idx)
+        highlight_tag = str(resolved)[:10]
+
+    apply_global_style()
+    font = get_plot_font()
+    colors = plt.cm.viridis(np.linspace(0.15, 0.95, max(nt, 2)))
+    fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.4), constrained_layout=True)
+
+    ax_abs, ax_norm, ax_ratio = axes
+    for k in range(1, nt):
+        y_abs = np.asarray(result.deposit_per_year[k, :], dtype=float)
+        y_abs[:k] = np.nan
+        ax_abs.plot(time_axis, y_abs, linewidth=1.2, color=colors[k])
+
+        denom = float(result.deposit_per_year[k, k]) if np.isfinite(result.deposit_per_year[k, k]) else np.nan
+        y_norm = np.full_like(y_abs, np.nan, dtype=float)
+        if np.isfinite(denom) and denom != 0.0:
+            y_norm[k:] = y_abs[k:] / denom
+        else:
+            y_norm[k:] = 0.0
+        ax_norm.plot(time_axis, y_norm, linewidth=1.2, color=colors[k])
+
+    if highlight_idx is not None and highlight_idx >= 1:
+        y_abs = np.asarray(result.deposit_per_year[highlight_idx, :], dtype=float)
+        y_abs[:highlight_idx] = np.nan
+        ax_abs.plot(time_axis, y_abs, linewidth=2.4, color="red", zorder=3)
+
+        denom = float(result.deposit_per_year[highlight_idx, highlight_idx]) if np.isfinite(result.deposit_per_year[highlight_idx, highlight_idx]) else np.nan
+        y_norm = np.full_like(y_abs, np.nan, dtype=float)
+        if np.isfinite(denom) and denom != 0.0:
+            y_norm[highlight_idx:] = y_abs[highlight_idx:] / denom
+        else:
+            y_norm[highlight_idx:] = 0.0
+        ax_norm.plot(time_axis, y_norm, linewidth=2.4, color="red", zorder=3)
+
+    denom0 = float(result.deposit_per_year[0, 0]) if np.isfinite(result.deposit_per_year[0, 0]) else np.nan
+    ratio_t0 = np.full(nt, np.nan, dtype=float)
+    if np.isfinite(denom0) and denom0 != 0.0:
+        ratio_t0 = np.clip(np.asarray(result.deposit_per_year[0, :], dtype=float) / denom0, 0.0, 1.0)
+    ax_ratio.plot(time_axis, ratio_t0, color="k", linewidth=1.4)
+    if highlight_idx is not None and highlight_idx < len(time_axis):
+        ax_ratio.axvline(time_axis[highlight_idx], color="red", linewidth=1.6, zorder=3)
+
+    if highlight_tag:
+        fig.suptitle(f"Domain preservation metrics (highlight: {highlight_tag})", fontproperties=font)
+    else:
+        fig.suptitle("Domain preservation metrics", fontproperties=font)
+
+    ax_abs.set_title("(d) Volume preserved (absolute)", fontproperties=font)
+    ax_abs.set_xlabel(time_label, fontproperties=font)
+    ax_abs.set_ylabel("Volume [m^3]", fontproperties=font)
+    ax_abs.grid(True, alpha=0.3)
+
+    ax_norm.set_title("(e) Volume preserved (normalized)", fontproperties=font)
+    ax_norm.set_xlabel(time_label, fontproperties=font)
+    ax_norm.set_ylabel("Fraction of initial", fontproperties=font)
+    ax_norm.grid(True, alpha=0.3)
+
+    ax_ratio.set_title("(f) Theseus ratio (t0 preserved)", fontproperties=font)
+    ax_ratio.set_xlabel(time_label, fontproperties=font)
+    ax_ratio.set_ylabel("Fraction of initial", fontproperties=font)
+    if np.any(np.isfinite(ratio_t0)):
+        ratio_min = float(np.nanmin(ratio_t0))
+        if np.isfinite(ratio_min) and ratio_min < 1.0:
+            ax_ratio.set_ylim(ratio_min, 1.0)
+        else:
+            ax_ratio.set_ylim(0.0, 1.0)
+    else:
+        ax_ratio.set_ylim(0.0, 1.0)
+    ax_ratio.grid(True, alpha=0.3)
+
+    if time_axis.size > 0 and np.any(np.isfinite(time_axis)):
+        t_max = float(np.nanmax(time_axis))
+        if start_year_at_zero:
+            t_min = 0.0
+            if t_max <= 0.0:
+                t_max = 1.0
+        else:
+            t_min = float(np.nanmin(time_axis))
+            if not np.isfinite(t_min) or t_max <= t_min:
+                t_min, t_max = 0.0, 1.0
+        for ax in axes:
+            ax.set_xlim(t_min, t_max)
+
+    for ax in axes:
+        apply_axes_font(ax, font)
+
+    out_dir = Path(output_root) / "plots" / "python" / "stratigraphy" / "domain_preservation_metrics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "domain_preservation_metrics.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return {
+        "metrics_path": out_path,
+        "output_dir": out_dir,
+        "highlight_index": highlight_idx,
+        "highlight_tag": highlight_tag,
+    }
+
+
 def _transect_hits_domain(bathy_cube, transect: Transect) -> bool:
     """Return True if any transect point intersects the bathymetry domain hull."""
     z_last = bathy_cube.z[:, :, -1]

@@ -250,7 +250,7 @@ def plot_stratigraphy_stack(
             intact &= np.isclose(deposit_elev[highlight_layer, :], z_stack[highlight_layer, :], atol=1e-6)
             highlight_surface = np.where(intact, deposit_elev[highlight_layer, :], np.nan)
 
-    fig = plt.figure(figsize=(14.5, 7.4))
+    fig = plt.figure(figsize=(14.5, 7.4), constrained_layout=True)
     gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 0.7], hspace=0.45, wspace=0.25)
     axes_top = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
     axes_bottom = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[1, 2])]
@@ -404,7 +404,6 @@ def plot_stratigraphy_stack(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for ax in axes_top + axes_bottom:
         _apply_axes_font(ax, font)
-    fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.show()
     plt.close(fig)
