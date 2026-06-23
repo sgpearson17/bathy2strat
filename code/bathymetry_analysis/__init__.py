@@ -49,7 +49,14 @@ from .morphodynamic_analysis import (
     run_morphodynamic_analysis,
     save_morphodynamic_csv,
 )
+from .xbeach import (
+    load_xbeach_bathy_cube,
+    median_grid_spacing,
+)
 from .workflows import (
+    plot_domain_preservation_metrics,
+    plot_domain_surface_age_maps,
+    plot_highlight_deposit_thickness_maps,
     run_morpho_wave_correlations,
     run_morphodynamics_vs_wave_power,
     run_shapefile_transect_plots,
@@ -101,8 +108,13 @@ __all__ = [
     "plot_volume_timeseries",
     "run_morphodynamic_analysis",
     "save_morphodynamic_csv",
+    "load_xbeach_bathy_cube",
+    "median_grid_spacing",
     "run_morpho_wave_correlations",
     "run_morphodynamics_vs_wave_power",
+    "plot_domain_preservation_metrics",
+    "plot_domain_surface_age_maps",
+    "plot_highlight_deposit_thickness_maps",
     "run_shapefile_transect_plots",
     "run_transect_plots",
     "run_transect_slice_plots",
