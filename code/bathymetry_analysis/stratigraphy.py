@@ -419,6 +419,10 @@ def plot_stacked_stratigraphy_section(
     scale_factor: float = 2.0,
     clip_x_to_data: bool = False,
     clip_y_to_data: bool = False,
+    overlay_points: np.ndarray | None = None,
+    overlay_color: str = "#00E5FF",
+    overlay_edge_color: str = "black",
+    overlay_marker_size: float = 8.0,
 ) -> None:
     """Plot a standalone stacked stratigraphy section with a fixed title.
 
@@ -438,6 +442,10 @@ def plot_stacked_stratigraphy_section(
     :param scale_factor: Multiplier for scaled figure size.
     :param clip_x_to_data: Clip x-limits to the transect data extent.
     :param clip_y_to_data: Clip y-limits to the data extent.
+    :param overlay_points: Optional Nx2 array of distance/elevation points.
+    :param overlay_color: Marker color for overlay points.
+    :param overlay_edge_color: Marker edge color for overlay points.
+    :param overlay_marker_size: Marker area for overlay points in points squared.
     """
     x_m = cube.x[0, :]
     z_stack = cube.z[0, :, :].T
@@ -471,6 +479,11 @@ def plot_stacked_stratigraphy_section(
     data_xmax = float(np.nanmax(x_m)) if len(x_m) else 0.0
     data_ymin = float(np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev)]))
     data_ymax = float(np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev)]))
+    if overlay_points is not None and overlay_points.size:
+        data_xmin = min(data_xmin, float(np.nanmin(overlay_points[:, 0])))
+        data_xmax = max(data_xmax, float(np.nanmax(overlay_points[:, 0])))
+        data_ymin = min(data_ymin, float(np.nanmin(overlay_points[:, 1])))
+        data_ymax = max(data_ymax, float(np.nanmax(overlay_points[:, 1])))
 
     if clip_x_to_data:
         x_range = data_xmax - data_xmin
@@ -518,6 +531,16 @@ def plot_stacked_stratigraphy_section(
     if np.any(np.isfinite(max_surface)):
         ax.plot(x_m, max_surface, color="0.2", linestyle="--", linewidth=0.8, zorder=2)
     ax.plot(x_m, deposit_elev[-1, :], color="k", linewidth=2.0)
+    if overlay_points is not None and overlay_points.size:
+        ax.scatter(
+            overlay_points[:, 0],
+            overlay_points[:, 1],
+            s=overlay_marker_size,
+            c=overlay_color,
+            edgecolors=overlay_edge_color,
+            linewidths=0.35,
+            zorder=4,
+        )
 
     ax.set_title(title, fontproperties=font)
     if highlight_tag:

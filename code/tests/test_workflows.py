@@ -35,6 +35,88 @@ def test_startup_check_no_install(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called == []
 
 
+def test_load_profile_overlay_matches_label_and_aligns_start(tmp_path: Path) -> None:
+    """Load a headerless profile CSV selected by its transect label."""
+    overlay_dir = tmp_path / "overlays"
+    overlay_dir.mkdir()
+    pd.DataFrame([[-2.0, -5.0], [3.0, -4.0]]).to_csv(
+        overlay_dir / "A-A_digitized.csv", index=False, header=False
+    )
+
+    points = workflows._load_profile_overlay(overlay_dir, "A", align_start=True)
+
+    assert points is not None
+    np.testing.assert_allclose(points, [[0.0, -5.0], [5.0, -4.0]])
+
+
+def test_load_profile_overlay_skips_empty_csv(tmp_path: Path) -> None:
+    """Treat an empty label-matched CSV as an absent optional overlay."""
+    overlay_dir = tmp_path / "overlays"
+    overlay_dir.mkdir()
+    (overlay_dir / "B-B_digitized.csv").touch()
+
+    assert workflows._load_profile_overlay(overlay_dir, "B") is None
+
+
+def test_run_transect_plots_forwards_overlay_to_shapefile_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pass profile overlay options through the shapefile workflow branch."""
+    received = {}
+
+    def fake_run_shapefile_transect_plots(**kwargs):
+        received.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(workflows, "run_shapefile_transect_plots", fake_run_shapefile_transect_plots)
+
+    workflows.run_transect_plots(
+        source="shapefiles",
+        bathy_nc_path=tmp_path / "bathy.nc",
+        output_root=tmp_path,
+        shp_dir=tmp_path / "shapes",
+        overlay_csv=tmp_path / "overlays",
+        overlay_color="crimson",
+        overlay_marker_size=12.0,
+        overlay_align_start=True,
+    )
+
+    assert received["overlay_csv"] == tmp_path / "overlays"
+    assert received["overlay_color"] == "crimson"
+    assert received["overlay_marker_size"] == 12.0
+    assert received["overlay_align_start"] is True
+
+
+def test_run_transect_plots_overlay_is_optional(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Run the public shapefile workflow without specifying an overlay."""
+    received = {}
+
+    def fake_run_shapefile_transect_plots(**kwargs):
+        received.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(workflows, "run_shapefile_transect_plots", fake_run_shapefile_transect_plots)
+
+    workflows.run_transect_plots(
+        source="shapefiles",
+        bathy_nc_path=tmp_path / "bathy.nc",
+        output_root=tmp_path,
+        shp_dir=tmp_path / "shapes",
+    )
+
+    assert received["overlay_csv"] is None
+
+
+def test_transect_output_path_changes_only_when_overlay_enabled(tmp_path: Path) -> None:
+    """Keep standard paths unchanged and suffix overlay output paths."""
+    assert workflows._transect_output_path(tmp_path, "strat_section_A.png", False) == (
+        tmp_path / "strat_section_A.png"
+    )
+    assert workflows._transect_output_path(tmp_path / "overlay", "strat_section_A.png", True) == (
+        tmp_path / "overlay" / "strat_section_A_overlay.png"
+    )
+
+
 def test_run_morphodynamics_vs_wave_power_writes_plots(tmp_path: Path) -> None:
     """Write stacked wave power plots for synthetic inputs."""
     morpho_csv = tmp_path / "morpho.csv"

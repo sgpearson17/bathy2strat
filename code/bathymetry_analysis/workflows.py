@@ -87,6 +87,59 @@ def _smooth_transect_xy(
     x_new, y_new = splev(t_new, tck)
     return np.asarray(x_new), np.asarray(y_new)
 
+
+def _load_profile_overlay(
+    csv_source: str | Path,
+    transect_label: str,
+    x_column: str | None = None,
+    y_column: str | None = None,
+    align_start: bool = False,
+) -> np.ndarray | None:
+    """Load profile-space points from one CSV or a label-matched CSV directory."""
+    source = Path(csv_source)
+    if source.is_dir():
+        label_prefix = f"{transect_label}-{transect_label}".casefold()
+        matches = [path for path in sorted(source.glob("*.csv")) if path.stem.casefold().startswith(label_prefix)]
+        if not matches:
+            return None
+        source = matches[0]
+    elif not source.is_file():
+        raise FileNotFoundError(f"Overlay CSV source does not exist: {source}")
+
+    if (x_column is None) != (y_column is None):
+        raise ValueError("overlay_x_column and overlay_y_column must be provided together")
+    try:
+        frame = pd.read_csv(source, header=None if x_column is None else "infer")
+    except pd.errors.EmptyDataError:
+        print(f"WARNING: overlay CSV {source} is empty and was skipped.")
+        return None
+
+    if x_column is None:
+        if frame.shape[1] < 2:
+            raise ValueError(f"Overlay CSV must contain at least two columns: {source}")
+        x_values = pd.to_numeric(frame.iloc[:, 0], errors="coerce")
+        y_values = pd.to_numeric(frame.iloc[:, 1], errors="coerce")
+    else:
+        missing = [column for column in (x_column, y_column) if column not in frame.columns]
+        if missing:
+            raise ValueError(f"Overlay CSV {source} is missing column(s): {', '.join(missing)}")
+        x_values = pd.to_numeric(frame[x_column], errors="coerce")
+        y_values = pd.to_numeric(frame[y_column], errors="coerce")
+
+    points = np.column_stack([x_values.to_numpy(dtype=float), y_values.to_numpy(dtype=float)])
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if align_start and points.size:
+        points[:, 0] -= np.min(points[:, 0])
+    return points
+
+
+def _transect_output_path(directory: Path, filename: str, overlay_enabled: bool) -> Path:
+    """Build a transect output path with the optional overlay suffix."""
+    path = directory / filename
+    if overlay_enabled:
+        return path.with_name(f"{path.stem}_overlay{path.suffix}")
+    return path
+
 DEFAULT_REQUIRED_MODULES = {
     "numpy": "numpy",
     "pandas": "pandas",
@@ -165,6 +218,10 @@ def _write_stratigraphy_gif(
     max_fig_height_cm: float,
     fps: int = 6,
     frame_stride: int = 1,
+    overlay_points: np.ndarray | None = None,
+    overlay_color: str = "#00E5FF",
+    overlay_edge_color: str = "black",
+    overlay_marker_size: float = 8.0,
 ) -> None:
     """Create an animated GIF showing stacked stratigraphy over time."""
     try:
@@ -184,6 +241,13 @@ def _write_stratigraphy_gif(
     min_elev = float(np.nanmin([np.nanmin(z_stack), np.nanmin(deposit_elev_full)]))
     max_elev = float(np.nanmax([np.nanmax(z_stack), np.nanmax(deposit_elev_full)]))
     y_min_plot, y_max_plot = (plot_ylim if plot_ylim is not None else (min_elev, max_elev))
+    x_min_plot = float(np.nanmin(x_m)) if len(x_m) else 0.0
+    x_max_plot = float(np.nanmax(x_m)) if len(x_m) else 0.0
+    if overlay_points is not None and overlay_points.size:
+        x_min_plot = min(x_min_plot, float(np.nanmin(overlay_points[:, 0])))
+        x_max_plot = max(x_max_plot, float(np.nanmax(overlay_points[:, 0])))
+        y_min_plot = min(y_min_plot, float(np.nanmin(overlay_points[:, 1])))
+        y_max_plot = max(y_max_plot, float(np.nanmax(overlay_points[:, 1])))
     base = min_elev - 0.01 * abs(min_elev)
     # Clip to the baseline to avoid extra whitespace below the section.
     y_min_plot = max(base, y_min_plot)
@@ -192,7 +256,7 @@ def _write_stratigraphy_gif(
     if not np.isfinite(y_range) or y_range <= 0:
         y_range = 1.0
 
-    x_range = float(np.nanmax(x_m) - np.nanmin(x_m)) if len(x_m) else 0.0
+    x_range = x_max_plot - x_min_plot
     fig_w, fig_h = _section_figsize(
         x_range,
         y_range,
@@ -244,6 +308,16 @@ def _write_stratigraphy_gif(
         if np.any(np.isfinite(max_surface)):
             ax.plot(x_m, max_surface, color="0.2", linestyle="--", linewidth=0.8, zorder=2)
         ax.plot(x_m, deposit_elev[idx, :], color="k", linewidth=1.6)
+        if overlay_points is not None and overlay_points.size:
+            ax.scatter(
+                overlay_points[:, 0],
+                overlay_points[:, 1],
+                s=overlay_marker_size,
+                c=overlay_color,
+                edgecolors=overlay_edge_color,
+                linewidths=0.35,
+                zorder=4,
+            )
 
         mhw_color = "#0b2e5b"
         dash_style = (0, (6, 3))
@@ -268,7 +342,7 @@ def _write_stratigraphy_gif(
             )
         apply_axes_font(ax, font)
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(0.0, float(x_m[-1]) if len(x_m) else 0.0)
+        ax.set_xlim(x_min_plot, x_max_plot)
         ax.set_ylim(y_min_plot, y_max_plot)
 
         fig.tight_layout()
@@ -499,6 +573,13 @@ def run_transect_plots(
     distance_mode: str = "curvy",
     map_tick_length_km: float = 0.02,
     map_output_name: str = "transect_location_plan_shapefiles.png",
+    overlay_csv: str | Path | None = None,
+    overlay_x_column: str | None = None,
+    overlay_y_column: str | None = None,
+    overlay_color: str = "#00E5FF",
+    overlay_edge_color: str = "black",
+    overlay_marker_size: float = 8.0,
+    overlay_align_start: bool = False,
 ) -> dict[str, object]:
     """Run transect plots from endpoints or shapefiles with a unified interface.
 
@@ -529,6 +610,13 @@ def run_transect_plots(
         distance_mode: "curvy" uses polylines; "straight" uses endpoints.
         map_tick_length_km: Tick length for transect ticks in maps.
         map_output_name: Filename for shapefile transect maps.
+        overlay_csv: Optional profile CSV or directory of label-prefixed CSV files.
+        overlay_x_column: Optional CSV column containing profile distance in meters.
+        overlay_y_column: Optional CSV column containing elevation in meters.
+        overlay_color: Color used for profile overlay points.
+        overlay_edge_color: Edge color used for profile overlay points.
+        overlay_marker_size: Overlay marker area in points squared.
+        overlay_align_start: Shift each overlay so its minimum distance is zero.
 
     Returns:
         Dict containing outputs from the selected workflow.
@@ -583,6 +671,13 @@ def run_transect_plots(
             make_gif=make_gif,
             gif_fps=gif_fps,
             gif_stride=gif_stride,
+            overlay_csv=overlay_csv,
+            overlay_x_column=overlay_x_column,
+            overlay_y_column=overlay_y_column,
+            overlay_color=overlay_color,
+            overlay_edge_color=overlay_edge_color,
+            overlay_marker_size=overlay_marker_size,
+            overlay_align_start=overlay_align_start,
         )
     raise ValueError("source must be 'endpoints' or 'shapefiles'.")
 
@@ -909,6 +1004,13 @@ def run_shapefile_transect_plots(
     make_gif: bool = False,
     gif_fps: int = 6,
     gif_stride: int = 1,
+    overlay_csv: str | Path | None = None,
+    overlay_x_column: str | None = None,
+    overlay_y_column: str | None = None,
+    overlay_color: str = "#00E5FF",
+    overlay_edge_color: str = "black",
+    overlay_marker_size: float = 8.0,
+    overlay_align_start: bool = False,
 ) -> dict[str, object]:
     """Plot stratigraphy sections and a location map for shapefile transects.
 
@@ -937,6 +1039,13 @@ def run_shapefile_transect_plots(
         make_gif: Whether to create a stratigraphy GIF for each transect.
         gif_fps: Frames per second for GIF export.
         gif_stride: Step between frames (e.g., 2 uses every other survey).
+        overlay_csv: Optional profile CSV or directory of label-prefixed CSV files.
+        overlay_x_column: Optional CSV column containing profile distance in meters.
+        overlay_y_column: Optional CSV column containing elevation in meters.
+        overlay_color: Color used for profile overlay points.
+        overlay_edge_color: Edge color used for profile overlay points.
+        overlay_marker_size: Overlay marker area in points squared.
+        overlay_align_start: Shift each overlay so its minimum distance is zero.
 
     Returns:
         Dict containing bathy cube, transects, and output paths.
@@ -1026,23 +1135,37 @@ def run_shapefile_transect_plots(
         max_depth_range = plot_ylim[1] - plot_ylim[0]
 
     highlight_dates = _normalize_highlight_dates(highlight_date)
+    overlay_enabled = overlay_csv is not None
+    transect_output_dir = slice_dir / "overlay" if overlay_enabled else slice_dir
+    transect_output_dir.mkdir(parents=True, exist_ok=True)
 
     for label, transect, slice_cube, slice_result, length_m in entries:
         section_title = f"{label}-{label}'"
         xticks_m = np.arange(0.0, length_m + 1e-6, tick_spacing_m)
+        overlay_points = None
+        if overlay_csv is not None:
+            overlay_points = _load_profile_overlay(
+                overlay_csv,
+                label,
+                x_column=overlay_x_column,
+                y_column=overlay_y_column,
+                align_start=overlay_align_start,
+            )
 
         if not highlight_dates:
             plot_stratigraphy_stack(
                 slice_cube,
                 slice_result,
-                slice_dir / f"strat_overview_section_{label}.png",
+                _transect_output_path(
+                    transect_output_dir, f"strat_overview_section_{label}.png", overlay_enabled
+                ),
                 f"overview_{label}",
                 time_vals=slice_cube.t,
                 title_prefix=section_title,
             )
             plot_stacked_stratigraphy_section(
                 slice_cube,
-                slice_dir / f"strat_section_{label}.png",
+                _transect_output_path(transect_output_dir, f"strat_section_{label}.png", overlay_enabled),
                 f"Cross-section {section_title}",
                 plot_xlim=None,
                 plot_ylim=plot_ylim,
@@ -1056,17 +1179,25 @@ def run_shapefile_transect_plots(
                 max_fig_height_cm=max_fig_height_cm,
                 clip_x_to_data=True,
                 clip_y_to_data=True,
+                overlay_points=overlay_points,
+                overlay_color=overlay_color,
+                overlay_edge_color=overlay_edge_color,
+                overlay_marker_size=overlay_marker_size,
             )
         else:
             for date_val in highlight_dates:
                 highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
                 highlight_tag = highlight_str[:10]
-                slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                slice_highlight_dir = transect_output_dir / f"highlight_{highlight_tag}"
                 slice_highlight_dir.mkdir(parents=True, exist_ok=True)
                 plot_stratigraphy_stack(
                     slice_cube,
                     slice_result,
-                    slice_highlight_dir / f"strat_{label}_highlight_{highlight_tag}.png",
+                    _transect_output_path(
+                        slice_highlight_dir,
+                        f"strat_{label}_highlight_{highlight_tag}.png",
+                        overlay_enabled,
+                    ),
                     f"overview_slice_{label}",
                     time_vals=slice_cube.t,
                     highlight_date=date_val,
@@ -1074,7 +1205,11 @@ def run_shapefile_transect_plots(
                 )
                 plot_stacked_stratigraphy_section(
                     slice_cube,
-                    slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.png",
+                    _transect_output_path(
+                        slice_highlight_dir,
+                        f"strat_section_{label}_highlight_{highlight_tag}.png",
+                        overlay_enabled,
+                    ),
                     f"Cross-section {section_title}",
                     plot_xlim=None,
                     plot_ylim=plot_ylim,
@@ -1088,11 +1223,17 @@ def run_shapefile_transect_plots(
                     max_fig_height_cm=max_fig_height_cm,
                     clip_x_to_data=True,
                     clip_y_to_data=True,
+                    overlay_points=overlay_points,
+                    overlay_color=overlay_color,
+                    overlay_edge_color=overlay_edge_color,
+                    overlay_marker_size=overlay_marker_size,
                 )
 
         if make_gif:
             if not highlight_dates:
-                gif_path = slice_dir / f"strat_section_{label}.gif"
+                gif_path = _transect_output_path(
+                    transect_output_dir, f"strat_section_{label}.gif", overlay_enabled
+                )
                 _write_stratigraphy_gif(
                     slice_cube,
                     gif_path,
@@ -1107,14 +1248,22 @@ def run_shapefile_transect_plots(
                     max_fig_height_cm=max_fig_height_cm,
                     fps=gif_fps,
                     frame_stride=gif_stride,
+                    overlay_points=overlay_points,
+                    overlay_color=overlay_color,
+                    overlay_edge_color=overlay_edge_color,
+                    overlay_marker_size=overlay_marker_size,
                 )
             else:
                 for date_val in highlight_dates:
                     highlight_str = date_val if isinstance(date_val, str) else str(np.datetime64(date_val))
                     highlight_tag = highlight_str[:10]
-                    slice_highlight_dir = slice_dir / f"highlight_{highlight_tag}"
+                    slice_highlight_dir = transect_output_dir / f"highlight_{highlight_tag}"
                     slice_highlight_dir.mkdir(parents=True, exist_ok=True)
-                    gif_path = slice_highlight_dir / f"strat_section_{label}_highlight_{highlight_tag}.gif"
+                    gif_path = _transect_output_path(
+                        slice_highlight_dir,
+                        f"strat_section_{label}_highlight_{highlight_tag}.gif",
+                        overlay_enabled,
+                    )
                     _write_stratigraphy_gif(
                         slice_cube,
                         gif_path,
@@ -1129,6 +1278,10 @@ def run_shapefile_transect_plots(
                         max_fig_height_cm=max_fig_height_cm,
                         fps=gif_fps,
                         frame_stride=gif_stride,
+                        overlay_points=overlay_points,
+                        overlay_color=overlay_color,
+                        overlay_edge_color=overlay_edge_color,
+                        overlay_marker_size=overlay_marker_size,
                     )
 
     if valid_transects:
